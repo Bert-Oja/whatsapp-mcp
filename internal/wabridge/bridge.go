@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"time"
 
 	"go.mau.fi/whatsmeow"
@@ -28,6 +29,12 @@ type Bridge struct {
 	Client *whatsmeow.Client
 	Store  *store.MessageStore
 	Logger waLog.Logger
+
+	// LoggedOut is closed when WhatsApp invalidates the session (the account
+	// was unlinked, or the linked device expired). A headless deployment can
+	// exit on this so the supervisor restarts it and prints a fresh QR code.
+	LoggedOut     chan struct{}
+	loggedOutOnce sync.Once
 }
 
 // Open connects to the WhatsApp session database under dir. The session
@@ -65,7 +72,12 @@ func Open(dir string, logger waLog.Logger) (*Bridge, error) {
 		return nil, fmt.Errorf("failed to initialize message store: %w", err)
 	}
 
-	b := &Bridge{Client: client, Store: messageStore, Logger: logger}
+	b := &Bridge{
+		Client:    client,
+		Store:     messageStore,
+		Logger:    logger,
+		LoggedOut: make(chan struct{}),
+	}
 	client.AddEventHandler(b.handleEvent)
 	return b, nil
 }
@@ -89,7 +101,8 @@ func (b *Bridge) handleEvent(evt interface{}) {
 	case *events.Connected:
 		b.Logger.Infof("Connected to WhatsApp")
 	case *events.LoggedOut:
-		b.Logger.Warnf("Device logged out, please scan QR code to log in again")
+		b.Logger.Warnf("Device logged out; the WhatsApp session is no longer valid and a new QR scan is required")
+		b.loggedOutOnce.Do(func() { close(b.LoggedOut) })
 	}
 }
 
@@ -482,12 +495,12 @@ type MediaDownloader struct {
 	MediaType     whatsmeow.MediaType
 }
 
-func (d *MediaDownloader) GetDirectPath() string      { return d.DirectPath }
-func (d *MediaDownloader) GetURL() string             { return d.URL }
-func (d *MediaDownloader) GetMediaKey() []byte        { return d.MediaKey }
-func (d *MediaDownloader) GetFileLength() uint64      { return d.FileLength }
-func (d *MediaDownloader) GetFileSHA256() []byte      { return d.FileSHA256 }
-func (d *MediaDownloader) GetFileEncSHA256() []byte   { return d.FileEncSHA256 }
+func (d *MediaDownloader) GetDirectPath() string             { return d.DirectPath }
+func (d *MediaDownloader) GetURL() string                    { return d.URL }
+func (d *MediaDownloader) GetMediaKey() []byte               { return d.MediaKey }
+func (d *MediaDownloader) GetFileLength() uint64             { return d.FileLength }
+func (d *MediaDownloader) GetFileSHA256() []byte             { return d.FileSHA256 }
+func (d *MediaDownloader) GetFileEncSHA256() []byte          { return d.FileEncSHA256 }
 func (d *MediaDownloader) GetMediaType() whatsmeow.MediaType { return d.MediaType }
 
 // DownloadMedia fetches the media for a message, returning its type, filename

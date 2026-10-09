@@ -178,8 +178,18 @@ unprivileged.
 4. **Fork divergence** — this is a substantial fork of `lharries/whatsapp-mcp`;
    the Docker support could later be offered upstream as a PR.
 
-## Open items deferred to implementation
+## Phase 3 notes
 
-- Healthcheck endpoint for the Streamable HTTP server (a trivial `/healthz` on
-  the same listener).
-- Whether to default to QR-in-logs or `PairPhone` for first-time pairing.
+- The MCP endpoint is `/mcp` (Streamable HTTP); `/healthz` returns 200 when
+  connected to WhatsApp and 503 otherwise, so a container healthcheck reflects
+  real session state rather than just process liveness.
+- Pairing supports both modes: QR printed to the log stream, or `-pair-phone`
+  for an 8-digit code. In phone mode the code is requested only after the first
+  QR event, because whatsmeow requires the websocket to be established first
+  and pairing codes expire once the server stops issuing QR codes.
+- Message-reading tools return a single plain-text content block. The SDK
+  otherwise appends a JSON-encoded duplicate when the output type is not an
+  object, which would have changed what the model sees.
+- A `LoggedOut` event closes `Bridge.LoggedOut`, so a headless deployment can
+  exit and be restarted to print a fresh pairing code instead of idling with an
+  invalidated session.

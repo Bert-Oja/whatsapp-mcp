@@ -167,11 +167,11 @@ func (r *Reader) ListMessages(p ListMessagesParams) (string, error) {
 
 // ListChatsParams mirrors the list_chats tool arguments.
 type ListChatsParams struct {
-	Query             string
-	Limit             int
-	Page              int
+	Query              string
+	Limit              int
+	Page               int
 	IncludeLastMessage bool
-	SortBy            string
+	SortBy             string
 }
 
 // ListChats returns chats matching the filters.

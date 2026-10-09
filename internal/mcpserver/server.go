@@ -103,7 +103,7 @@ type listMessagesIn struct {
 	ContextAfter      int    `json:"context_after,omitempty" jsonschema:"Number of messages to include after each match (default 1)"`
 }
 
-func (s *Server) listMessages(ctx context.Context, req *mcp.CallToolRequest, in listMessagesIn) (*mcp.CallToolResult, tools.TextResult, error) {
+func (s *Server) listMessages(ctx context.Context, req *mcp.CallToolRequest, in listMessagesIn) (*mcp.CallToolResult, any, error) {
 	limit := in.Limit
 	if limit == 0 {
 		limit = 20
@@ -126,9 +126,9 @@ func (s *Server) listMessages(ctx context.Context, req *mcp.CallToolRequest, in 
 		ContextAfter:      in.ContextAfter,
 	})
 	if err != nil {
-		return nil, tools.TextResult{}, err
+		return nil, nil, err
 	}
-	return nil, tools.TextResult{Text: out}, nil
+	return textResult(out), nil, nil
 }
 
 type listChatsIn struct {
@@ -217,12 +217,12 @@ type getLastInteractionIn struct {
 	JID string `json:"jid" jsonschema:"The JID of the contact to search for"`
 }
 
-func (s *Server) getLastInteraction(ctx context.Context, req *mcp.CallToolRequest, in getLastInteractionIn) (*mcp.CallToolResult, tools.TextResult, error) {
+func (s *Server) getLastInteraction(ctx context.Context, req *mcp.CallToolRequest, in getLastInteractionIn) (*mcp.CallToolResult, any, error) {
 	out, err := s.reader.GetLastInteraction(in.JID)
 	if err != nil {
-		return nil, tools.TextResult{}, err
+		return nil, nil, err
 	}
-	return nil, tools.TextResult{Text: out}, nil
+	return textResult(out), nil, nil
 }
 
 type getMessageContextIn struct {
@@ -245,6 +245,14 @@ func (s *Server) getMessageContext(ctx context.Context, req *mcp.CallToolRequest
 		return nil, tools.MessageContext{}, err
 	}
 	return nil, out, nil
+}
+
+// textResult returns a tool result whose content is the raw string, so the
+// model sees "No messages to display." rather than a JSON-encoded wrapper.
+func textResult(text string) *mcp.CallToolResult {
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{&mcp.TextContent{Text: text}},
+	}
 }
 
 // ---------------------------------------------------------------------------

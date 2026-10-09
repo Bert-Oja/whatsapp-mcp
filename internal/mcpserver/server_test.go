@@ -183,3 +183,47 @@ func mustJSON(t *testing.T, res *mcp.CallToolResult) []byte {
 }
 
 var _ = filepath.Join
+
+// TestTextToolsReturnPlainString locks the content shape of the message-reading
+// tools. They must return the formatted text as-is, not a JSON-encoded wrapper:
+// the Python server returned a plain string and the model reads it directly.
+func TestTextToolsReturnPlainString(t *testing.T) {
+	session, _ := newTestSession(t)
+	ctx := context.Background()
+
+	res, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "list_messages",
+		Arguments: map[string]any{"query": "zzz-no-match"},
+	})
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if len(res.Content) == 0 {
+		t.Fatal("no content returned")
+	}
+	text, ok := res.Content[0].(*mcp.TextContent)
+	if !ok {
+		t.Fatalf("content is %T, want *mcp.TextContent", res.Content[0])
+	}
+	if text.Text != "No messages to display." {
+		t.Fatalf("content text = %q, want the bare placeholder string", text.Text)
+	}
+}
+
+// TestGetLastInteractionMissingReturnsEmpty covers the no-interaction case.
+func TestGetLastInteractionMissingReturnsEmpty(t *testing.T) {
+	session, _ := newTestSession(t)
+	ctx := context.Background()
+
+	res, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name:      "get_last_interaction",
+		Arguments: map[string]any{"jid": "nobody@s.whatsapp.net"},
+	})
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	text := res.Content[0].(*mcp.TextContent)
+	if text.Text != "" {
+		t.Fatalf("expected empty text, got %q", text.Text)
+	}
+}

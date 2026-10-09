@@ -45,7 +45,7 @@ func main() {
 	defer stop()
 
 	if !*mcpOnly {
-		if _, err := bridge.Connect(ctx, *pairPhone); err != nil {
+		if _, err := bridge.Connect(ctx, wabridge.PairingOptions{Phone: *pairPhone}); err != nil {
 			logger.Errorf("Failed to connect: %v", err)
 			os.Exit(1)
 		}
@@ -83,7 +83,19 @@ func main() {
 		}
 	}()
 
-	<-ctx.Done()
+	// A logged-out session cannot recover on its own: the linked device was
+	// removed or expired, so a new QR scan is required. Exit non-zero so the
+	// container restarts and prints a fresh pairing code instead of idling
+	// with a dead session.
+	if !*mcpOnly {
+		select {
+		case <-ctx.Done():
+		case <-bridge.LoggedOut:
+			logger.Warnf("Session ended; exiting so a new pairing can start")
+		}
+	} else {
+		<-ctx.Done()
+	}
 
 	fmt.Println("\nShutting down...")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
