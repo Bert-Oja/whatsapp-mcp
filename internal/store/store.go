@@ -21,6 +21,20 @@ type Message struct {
 	Filename  string
 }
 
+// TimeLayout is the format used to persist timestamps.
+//
+// This must match what mattn/go-sqlite3 wrote (its SQLiteTimestampFormats[0]),
+// because the timestamp columns are compared lexicographically as text.
+// modernc.org/sqlite would otherwise bind time.Time as
+// "2006-01-02 15:04:05 +0000 UTC", which sorts incorrectly against existing
+// rows and breaks every after/before filter and context query.
+const TimeLayout = "2006-01-02 15:04:05.999999999-07:00"
+
+// FormatTime renders a timestamp for storage or comparison.
+func FormatTime(t time.Time) string {
+	return t.Format(TimeLayout)
+}
+
 // MessageStore owns the messages.db SQLite database.
 type MessageStore struct {
 	db  *sql.DB
@@ -84,7 +98,7 @@ func (ms *MessageStore) Close() error { return ms.db.Close() }
 func (ms *MessageStore) StoreChat(jid, name string, lastMessageTime time.Time) error {
 	_, err := ms.db.Exec(
 		"INSERT OR REPLACE INTO chats (jid, name, last_message_time) VALUES (?, ?, ?)",
-		jid, name, lastMessageTime,
+		jid, name, FormatTime(lastMessageTime),
 	)
 	return err
 }
@@ -101,7 +115,7 @@ func (ms *MessageStore) StoreMessage(id, chatJID, sender, content string, timest
 		`INSERT OR REPLACE INTO messages
 		(id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, media_key, file_sha256, file_enc_sha256, file_length)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, chatJID, sender, content, timestamp, isFromMe, mediaType, filename, url, mediaKey, fileSHA256, fileEncSHA256, fileLength,
+		id, chatJID, sender, content, FormatTime(timestamp), isFromMe, mediaType, filename, url, mediaKey, fileSHA256, fileEncSHA256, fileLength,
 	)
 	return err
 }

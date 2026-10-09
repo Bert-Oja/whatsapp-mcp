@@ -95,7 +95,7 @@ it would add ~250 MB plus a module cache for no benefit.)
 
 ## Tool parity contract
 
-The 13 tools must keep their names, arguments, and output shape:
+The 12 tools must keep their names, arguments, and output shape:
 
 - Read: `search_contacts`, `list_messages`, `list_chats`, `get_chat`,
   `get_direct_chat_by_contact`, `get_contact_chats`, `get_last_interaction`,
@@ -127,8 +127,8 @@ migrates as-is.
 |---|---|---|
 | 0 | Branch, ADR | ADR committed on feature branch |
 | 1 | Restructure into `cmd/` + `internal/`; delete REST server; store path configurable | `go vet ./...`, `go build ./...` via `dev.sh` |
-| 2 | Port 13 tools to Go; port ffmpeg opus conversion | Table-driven tests vs. Python output on a fixture DB; in-memory MCP test lists 13 tools |
-| 3 | Streamable HTTP transport on `127.0.0.1:8765`; QR in logs; optional `PairPhone` | `pi mcp list` connects, 13 tools; fresh volume prints scannable QR |
+| 2 | Port 12 tools to Go; port ffmpeg opus conversion | Table-driven tests vs. Python output on a fixture DB; in-memory MCP test lists 12 tools |
+| 3 | Streamable HTTP transport on `127.0.0.1:8765`; QR in logs; optional `PairPhone` | `pi mcp list` connects, 12 tools; fresh volume prints scannable QR |
 | 4 | Multi-stage Dockerfile + compose | `docker compose up -d` healthy; non-root; caps dropped |
 | 5 | Pi `mcp.json` entry | read tool returns real data; send test lands |
 | 6 | Smoke, persistence, parity diff, then remove Python | `restart` needs no re-auth; README documents Docker flow |

@@ -13,7 +13,7 @@
 # so only the first invocation pays for dependency downloads.
 set -euo pipefail
 
-IMAGE="${GO_IMAGE:-golang:1.24-alpine}"
+IMAGE="${GO_IMAGE:-golang:1.25-alpine}"
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 exec docker run --rm \

@@ -1,0 +1,7 @@
+{
+    "format_image": "[2026-04-18 12:03:00] Chat: Alice Example From: Alice Example: [image - Message ID: m3 - Chat JID: 15551234567@s.whatsapp.net] photo attached\n",
+    "format_own": "[2026-04-18 12:01:00] Chat: Alice Example From: Me: hi Alice\n",
+    "list_context": "[2026-04-18 12:01:00] Chat: Alice Example From: Me: hi Alice\n[2026-04-18 12:03:00] Chat: Alice Example From: Alice Example: [image - Message ID: m3 - Chat JID: 15551234567@s.whatsapp.net] photo attached\n[2026-04-18 12:05:00] Chat: Alice Example From: Me: thanks!\n",
+    "empty": "No messages to display.",
+    "last_interaction": "[2026-04-18 12:05:00] Chat: Alice Example From: Me: thanks!\n"
+}
