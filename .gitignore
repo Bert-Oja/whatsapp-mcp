@@ -1,3 +1,6 @@
 *.db
 claude_desktop_config.json
 whatsapp.log
+
+# Local Go build output (see dev.sh; the host has no Go toolchain)
+.build/
