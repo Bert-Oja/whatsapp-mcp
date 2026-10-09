@@ -193,3 +193,26 @@ unprivileged.
 - A `LoggedOut` event closes `Bridge.LoggedOut`, so a headless deployment can
   exit and be restarted to print a fresh pairing code instead of idling with an
   invalidated session.
+
+## Read-only mode
+
+Writes are opt-in and **disabled by default**. This is enforced in two
+independent places so that a single mistake cannot expose sending:
+
+1. **Tool registration.** In read-only mode the `send_message`, `send_file` and
+   `send_audio_message` tools are never registered, so they do not appear in
+   `tools/list` and a call to them fails with `unknown tool`.
+2. **Sender guard.** The `tools.Sender` handed to the MCP layer is wrapped in a
+   guard that refuses every `SendMessage` call when writes are disabled. This
+   covers any future code path that bypasses the tool registry.
+
+Every tool carries MCP annotations: the read tools advertise
+`readOnlyHint: true`, and the write tools advertise `readOnlyHint: false` with
+`destructiveHint`, so clients can make their own permission decisions.
+
+Enable writes with `-allow-writes` or `ALLOW_WRITES=1` (Compose:
+`ALLOW_WRITES=true`). An unparseable value falls back to the safe default.
+
+Verified end to end against the running binary: read-only exposes 9 tools, all
+annotated `readOnlyHint`, and `send_message` returns `unknown tool`; with
+`-allow-writes` all 12 are exposed.

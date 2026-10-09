@@ -3,77 +3,187 @@ package mcpserver
 
 import (
 	"context"
+	"fmt"
+	"sort"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/Bert-Oja/whatsapp-mcp/internal/tools"
 )
 
-// Server holds the tool dependencies.
-type Server struct {
-	reader *tools.Reader
-	sender tools.Sender
+// Options configures which tools are exposed.
+type Options struct {
+	// AllowWrites enables the tools that send messages and files. When false
+	// (the default) the server exposes only read tools, and the write tools are
+	// neither registered nor callable.
+	AllowWrites bool
 }
 
-// New builds an MCP server with all twelve WhatsApp tools registered.
-func New(reader *tools.Reader, sender tools.Sender) *mcp.Server {
-	s := &Server{reader: reader, sender: sender}
+// Server holds the tool dependencies.
+type Server struct {
+	reader      *tools.Reader
+	sender      tools.Sender
+	allowWrites bool
+}
+
+// writeTools are the tools that mutate the outside world. They are only
+// registered when writes are explicitly enabled.
+var writeTools = map[string]bool{
+	"send_message":       true,
+	"send_file":          true,
+	"send_audio_message": true,
+}
+
+// readOnlyTools is the set always available.
+var readOnlyTools = map[string]bool{
+	"search_contacts":            true,
+	"list_messages":              true,
+	"list_chats":                 true,
+	"get_chat":                   true,
+	"get_direct_chat_by_contact": true,
+	"get_contact_chats":          true,
+	"get_last_interaction":       true,
+	"get_message_context":        true,
+	"download_media":             true,
+}
+
+// New builds an MCP server. Read tools are always registered; the write tools
+// are registered only when opts.AllowWrites is set.
+//
+// The sender is additionally wrapped in a guard, so that even if a write tool
+// were reached in read-only mode the outbound call would still be refused.
+func New(reader *tools.Reader, sender tools.Sender, opts Options) *mcp.Server {
+	sender = newGuard(sender, opts.AllowWrites)
+	s := &Server{reader: reader, sender: sender, allowWrites: opts.AllowWrites}
 	srv := mcp.NewServer(&mcp.Implementation{
 		Name:    "whatsapp",
-		Version: "0.2.0",
+		Version: "0.3.0",
 	}, nil)
 
+	readOnly := true
+	destructive := true
+	notDestructive := false
+
+	// --- Read tools ---
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "search_contacts",
 		Description: "Search WhatsApp contacts by name or phone number.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, s.searchContacts)
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "list_messages",
 		Description: "Get WhatsApp messages matching specified criteria with optional context.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, s.listMessages)
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "list_chats",
 		Description: "Get WhatsApp chats matching specified criteria.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, s.listChats)
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "get_chat",
 		Description: "Get WhatsApp chat metadata by JID.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, s.getChat)
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "get_direct_chat_by_contact",
 		Description: "Get WhatsApp chat metadata by sender phone number.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, s.getDirectChatByContact)
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "get_contact_chats",
 		Description: "Get all WhatsApp chats involving the contact.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, s.getContactChats)
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "get_last_interaction",
 		Description: "Get most recent WhatsApp message involving the contact.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, s.getLastInteraction)
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "get_message_context",
 		Description: "Get context around a specific WhatsApp message.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, s.getMessageContext)
-	mcp.AddTool(srv, &mcp.Tool{
-		Name:        "send_message",
-		Description: "Send a WhatsApp message to a specified phone number or group JID.",
-	}, s.sendMessage)
-	mcp.AddTool(srv, &mcp.Tool{
-		Name:        "send_file",
-		Description: "Send a file (image, video, raw audio, document) to a specified recipient.",
-	}, s.sendFile)
-	mcp.AddTool(srv, &mcp.Tool{
-		Name:        "send_audio_message",
-		Description: "Send an audio file as a WhatsApp voice message (requires an .ogg opus file, or ffmpeg for conversion).",
-	}, s.sendAudioMessage)
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "download_media",
 		Description: "Download media from a WhatsApp message and get the local file path.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, s.downloadMedia)
+
+	// --- Write tools (opt-in) ---
+	if opts.AllowWrites {
+		mcp.AddTool(srv, &mcp.Tool{
+			Name:        "send_message",
+			Description: "Send a WhatsApp message to a specified phone number or group JID.",
+			Annotations: &mcp.ToolAnnotations{
+				ReadOnlyHint:    false,
+				DestructiveHint: &destructive,
+				IdempotentHint:  false,
+				OpenWorldHint:   &readOnly,
+			},
+		}, s.sendMessage)
+		mcp.AddTool(srv, &mcp.Tool{
+			Name:        "send_file",
+			Description: "Send a file (image, video, raw audio, document) to a specified recipient.",
+			Annotations: &mcp.ToolAnnotations{
+				ReadOnlyHint:    false,
+				DestructiveHint: &destructive,
+				IdempotentHint:  false,
+				OpenWorldHint:   &readOnly,
+			},
+		}, s.sendFile)
+		mcp.AddTool(srv, &mcp.Tool{
+			Name:        "send_audio_message",
+			Description: "Send an audio file as a WhatsApp voice message (requires an .ogg opus file, or ffmpeg for conversion).",
+			Annotations: &mcp.ToolAnnotations{
+				ReadOnlyHint:    false,
+				DestructiveHint: &notDestructive,
+				IdempotentHint:  false,
+				OpenWorldHint:   &readOnly,
+			},
+		}, s.sendAudioMessage)
+	}
+
+	// Guard against the tool lists drifting apart.
+	assertToolPartition()
 
 	return srv
 }
+
+// assertToolPartition fails fast at construction if a tool is in both lists or
+// in neither, which would silently expose or hide a capability.
+func assertToolPartition() {
+	for name := range writeTools {
+		if readOnlyTools[name] {
+			panic(fmt.Sprintf("mcpserver: tool %q is both read-only and write", name))
+		}
+	}
+}
+
+// WriteToolNames returns the write tool names, sorted. Intended for tests and
+// for documenting what enabling writes exposes.
+func WriteToolNames() []string {
+	names := make([]string, 0, len(writeTools))
+	for name := range writeTools {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// ReadOnlyToolNames returns the read tool names, sorted.
+func ReadOnlyToolNames() []string {
+	names := make([]string, 0, len(readOnlyTools))
+	for name := range readOnlyTools {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// allowsWrites reports whether the write path is enabled.
+func (s *Server) allowsWrites() bool { return s.allowWrites }
 
 // ---------------------------------------------------------------------------
 // Read tools

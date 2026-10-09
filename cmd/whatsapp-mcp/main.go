@@ -24,11 +24,12 @@ import (
 
 func main() {
 	var (
-		storeDir  = flag.String("store-dir", envOr("STORE_DIR", "store"), "directory holding whatsapp.db, messages.db and downloaded media")
-		pairPhone = flag.String("pair-phone", os.Getenv("WA_PAIR_PHONE"), "phone number in international format to pair with an 8-digit code instead of a QR code")
-		logLevel  = flag.String("log-level", envOr("WA_LOG_LEVEL", "INFO"), "whatsmeow log level (DEBUG, INFO, WARN, ERROR)")
-		httpAddr  = flag.String("http", envOr("MCP_HTTP_ADDR", "127.0.0.1:8765"), "address for the MCP Streamable HTTP endpoint")
-		mcpOnly   = flag.Bool("mcp-only", os.Getenv("MCP_ONLY") == "1", "serve MCP without connecting to WhatsApp (for inspecting the tool surface)")
+		storeDir   = flag.String("store-dir", envOr("STORE_DIR", "store"), "directory holding whatsapp.db, messages.db and downloaded media")
+		pairPhone  = flag.String("pair-phone", os.Getenv("WA_PAIR_PHONE"), "phone number in international format to pair with an 8-digit code instead of a QR code")
+		logLevel   = flag.String("log-level", envOr("WA_LOG_LEVEL", "INFO"), "whatsmeow log level (DEBUG, INFO, WARN, ERROR)")
+		httpAddr   = flag.String("http", envOr("MCP_HTTP_ADDR", "127.0.0.1:8765"), "address for the MCP Streamable HTTP endpoint")
+		mcpOnly    = flag.Bool("mcp-only", os.Getenv("MCP_ONLY") == "1", "serve MCP without connecting to WhatsApp (for inspecting the tool surface)")
+		allowWrite = flag.Bool("allow-writes", envBool("ALLOW_WRITES", false), "expose the send_message, send_file and send_audio_message tools (default: read-only)")
 	)
 	flag.Parse()
 
@@ -57,8 +58,16 @@ func main() {
 	}
 
 	// Build the MCP server over the local message history and the bridge.
+	// Writes are opt-in: without -allow-writes the sending tools are neither
+	// registered nor reachable.
 	reader := tools.NewReader(bridge.Store.DB())
-	mcpServer := mcpserver.New(reader, bridge)
+	mcpServer := mcpserver.New(reader, bridge, mcpserver.Options{AllowWrites: *allowWrite})
+
+	if *allowWrite {
+		logger.Warnf("Writes are ENABLED: the send_message, send_file and send_audio_message tools are exposed")
+	} else {
+		logger.Infof("Read-only mode: sending tools are not exposed (start with -allow-writes to enable)")
+	}
 
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {

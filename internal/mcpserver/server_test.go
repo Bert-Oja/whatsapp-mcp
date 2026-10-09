@@ -70,7 +70,7 @@ func newTestSession(t *testing.T) (*mcp.ClientSession, *fakeSender) {
 	}
 
 	sender := &fakeSender{}
-	srv := New(tools.NewReader(db), sender)
+	srv := New(tools.NewReader(db), sender, Options{AllowWrites: true})
 
 	ctx := context.Background()
 	t1, t2 := mcp.NewInMemoryTransports()
