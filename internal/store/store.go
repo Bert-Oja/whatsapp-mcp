@@ -35,6 +35,12 @@ func FormatTime(t time.Time) string {
 	return t.Format(TimeLayout)
 }
 
+// DSN builds the modernc.org/sqlite connection string used for a database
+// file. Exported so tests can assert the required pragmas are present.
+func DSN(path string) string {
+	return "file:" + path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)"
+}
+
 // MessageStore owns the messages.db SQLite database.
 type MessageStore struct {
 	db  *sql.DB
@@ -47,8 +53,7 @@ func New(dir string) (*MessageStore, error) {
 		return nil, fmt.Errorf("failed to create store directory: %w", err)
 	}
 
-	dsn := "file:" + filepath.Join(dir, "messages.db") + "?_pragma=foreign_keys(1)"
-	db, err := sql.Open("sqlite", dsn)
+	db, err := sql.Open("sqlite", DSN(filepath.Join(dir, "messages.db")))
 	if err != nil {
 		return nil, fmt.Errorf("failed to open message database: %w", err)
 	}

@@ -45,10 +45,18 @@ func Open(dir string, logger waLog.Logger) (*Bridge, error) {
 	}
 
 	// Driver "sqlite" is modernc.org/sqlite (pure Go). whatsmeow accepts any
-	// dialect string prefixed with "sqlite", but the foreign-key pragma syntax
-	// differs from mattn/go-sqlite3: use _pragma=foreign_keys(1).
-	dsn := "file:" + filepath.Join(dir, "whatsapp.db") + "?_pragma=foreign_keys(1)"
-	container, err := sqlstore.New(context.Background(), "sqlite", dsn, logger)
+	// dialect string prefixed with "sqlite".
+	//
+	// busy_timeout and WAL matter here: whatsmeow touches this database from
+	// many goroutines, and modernc.org/sqlite defaults busy_timeout to 0, so
+	// contention immediately fails with SQLITE_BUSY (which surfaces as message
+	// decryption failures). mattn/go-sqlite3 set this itself; modernc does not.
+	//
+	// Note the pragma syntax differs from mattn too: _pragma=foreign_keys(1)
+	// rather than _foreign_keys=on.
+	sessionDSN := "file:" + filepath.Join(dir, "whatsapp.db") +
+		"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)"
+	container, err := sqlstore.New(context.Background(), "sqlite", sessionDSN, logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to session database: %w", err)
 	}

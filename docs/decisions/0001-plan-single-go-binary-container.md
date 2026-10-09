@@ -258,3 +258,36 @@ was reported clearly instead of hanging until the pairing timeout.
 The MCP endpoint starts only after WhatsApp connects. Before pairing, an MCP
 client cannot connect and `/healthz` reports 503 for liveness purposes. This is
 deliberate: exposing tools that cannot reach WhatsApp would be misleading.
+
+## Phase 5 notes: SQLITE_BUSY regression
+
+After pairing, the live container logged repeated failures:
+
+```
+[Client WARN] Failed to remove expired tctokens from DB: database is locked (5) (SQLITE_BUSY)
+[Client WARN] Error decrypting message AC49... from 138...@lid: failed to decrypt prekey
+              message: failed to load session with 138..._1:0: database is locked (5)
+[Client ERROR] Failed to sync app state after notification: ... mismatching LTHash
+```
+
+These were caused by the Phase 1 driver swap. `mattn/go-sqlite3` sets
+`PRAGMA busy_timeout = 5000` by default and opens with its own defaults;
+`modernc.org/sqlite` defaults `busy_timeout` to 0, so any contention fails
+immediately. whatsmeow accesses the session database from many goroutines, so
+this fired constantly: failed session lookups produce message decryption
+errors, and the failed writes are what produced the downstream
+`mismatching LTHash` app-state errors.
+
+Measured directly (20 goroutines writing):
+
+| DSN | busy_timeout | concurrent write failures |
+|---|---|---|
+| `_pragma=foreign_keys(1)` only | 0 | **19 of 20** |
+| `_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)` | 5000 | **0** |
+
+Both the session and message databases now use the full DSN. After rebuilding
+and recreating the container, the log is clean: no `SQLITE_BUSY` and no
+`mismatching LTHash`, with the existing session restored without re-pairing.
+
+A regression test (`TestConcurrentWritesDoNotFail`) reproduces the contention
+in-process, and `TestDSNHasRequiredPragmas` locks the required pragmas.
