@@ -48,12 +48,12 @@ func Open(dir string, logger waLog.Logger) (*Bridge, error) {
 	// dialect string prefixed with "sqlite", but the foreign-key pragma syntax
 	// differs from mattn/go-sqlite3: use _pragma=foreign_keys(1).
 	dsn := "file:" + filepath.Join(dir, "whatsapp.db") + "?_pragma=foreign_keys(1)"
-	container, err := sqlstore.New("sqlite", dsn, logger)
+	container, err := sqlstore.New(context.Background(), "sqlite", dsn, logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to session database: %w", err)
 	}
 
-	deviceStore, err := container.GetFirstDevice()
+	deviceStore, err := container.GetFirstDevice(context.Background())
 	if err != nil {
 		if err != sql.ErrNoRows {
 			return nil, fmt.Errorf("failed to get device: %w", err)
@@ -284,14 +284,14 @@ func (b *Bridge) ChatName(jid types.JID, chatJID string, conversation interface{
 		}
 
 		if name == "" {
-			if groupInfo, err := b.Client.GetGroupInfo(jid); err == nil && groupInfo.Name != "" {
+			if groupInfo, err := b.Client.GetGroupInfo(context.Background(), jid); err == nil && groupInfo.Name != "" {
 				name = groupInfo.Name
 			} else {
 				name = fmt.Sprintf("Group %s", jid.User)
 			}
 		}
 	} else {
-		contact, err := b.Client.Store.Contacts.GetContact(jid)
+		contact, err := b.Client.Store.Contacts.GetContact(context.Background(), jid)
 		switch {
 		case err == nil && contact.FullName != "":
 			name = contact.FullName
@@ -563,7 +563,7 @@ func (b *Bridge) DownloadMedia(messageID, chatJID string) (bool, string, string,
 		MediaType:     waMediaType,
 	}
 
-	mediaData, err := b.Client.Download(downloader)
+	mediaData, err := b.Client.Download(context.Background(), downloader)
 	if err != nil {
 		return false, "", "", "", fmt.Errorf("failed to download media: %v", err)
 	}

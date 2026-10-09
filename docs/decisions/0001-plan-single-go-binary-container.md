@@ -216,3 +216,45 @@ Enable writes with `-allow-writes` or `ALLOW_WRITES=1` (Compose:
 Verified end to end against the running binary: read-only exposes 9 tools, all
 annotated `readOnlyHint`, and `send_message` returns `unknown tool`; with
 `-allow-writes` all 12 are exposed.
+
+## Phase 4 notes
+
+### ffmpeg is compiled from source
+
+`send_audio_message` is the only consumer of ffmpeg. The available options were
+measured rather than estimated:
+
+| Option | Image size |
+|---|---|
+| `apk add ffmpeg` | 201 MB (123 packages, X11/VA-API/SVT-AV1 and friends) |
+| prebuilt static ffmpeg | 414 MB (the `ffmpeg` binary alone is 144 MB) |
+| **compiled encoder-only build** | **~17 MB** |
+
+The Dockerfile compiles ffmpeg 7.1 with libopus and only the demuxers/decoders
+needed to read common attachments (wav, mp3, m4a/aac, flac, ogg/opus, webm),
+then strips it to ~2.7 MB. The exact invocation used by `audio.go` was verified
+to produce a valid `OggS`/`OpusHead` stream.
+
+### Runtime image
+
+Final image is ~45 MB on `alpine:3.21`: a static CGO-free Go binary plus the
+minimal ffmpeg. Runs as uid 10001 with a read-only root filesystem, a 64 MB
+`/tmp` tmpfs for ffmpeg scratch space, all capabilities dropped, a 512 MB
+memory limit, and the port published to loopback only.
+
+### The pinned whatsmeow was too old to connect
+
+The first container run failed with `err-client-outdated` (HTTP 405): WhatsApp
+rejected the client version from the March 2025 whatsmeow build. The library
+and the Go toolchain were both updated (whatsmeow to 2026-10, Go to 1.26,
+required by both the library and the MCP SDK). The newer whatsmeow takes a
+`context.Context` on most client calls; those call sites were updated.
+
+This is the reason the Phase 3 event handling matters in practice: the failure
+was reported clearly instead of hanging until the pairing timeout.
+
+### Pairing precedes listening
+
+The MCP endpoint starts only after WhatsApp connects. Before pairing, an MCP
+client cannot connect and `/healthz` reports 503 for liveness purposes. This is
+deliberate: exposing tools that cannot reach WhatsApp would be misleading.

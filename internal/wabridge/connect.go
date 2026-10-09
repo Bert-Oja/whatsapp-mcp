@@ -54,7 +54,7 @@ func (b *Bridge) Connect(ctx context.Context, opts PairingOptions) (ConnectResul
 	}
 
 	requestCode := func() (string, error) {
-		return b.Client.PairPhone(opts.Phone, true, whatsmeow.PairClientChrome, "Chrome (Linux)")
+		return b.Client.PairPhone(context.Background(), opts.Phone, true, whatsmeow.PairClientChrome, "Chrome (Linux)")
 	}
 
 	return b.runPairing(ctx, qrChan, opts, requestCode)

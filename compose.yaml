@@ -1,0 +1,40 @@
+services:
+  whatsapp-mcp:
+    build: .
+    image: whatsapp-mcp:latest
+    container_name: whatsapp-mcp
+    restart: unless-stopped
+
+    # Bind to loopback only. This server reads private messages and can send
+    # them; it must never be reachable from the network.
+    ports:
+      - "127.0.0.1:8765:8765"
+
+    environment:
+      STORE_DIR: /data
+      MCP_HTTP_ADDR: 127.0.0.1:8765
+      # Writes are OFF by default. Set to "true" to expose the send tools.
+      ALLOW_WRITES: "${ALLOW_WRITES:-false}"
+      WA_LOG_LEVEL: "${WA_LOG_LEVEL:-INFO}"
+      # Set to an international phone number to pair with an 8-digit code
+      # instead of scanning a QR code from the logs.
+      WA_PAIR_PHONE: "${WA_PAIR_PHONE:-}"
+
+    volumes:
+      # Holds whatsapp.db (the linked-device session) and messages.db.
+      # Losing this means re-scanning the QR code.
+      - whatsapp-store:/data
+
+    # Hardening.
+    read_only: true
+    tmpfs:
+      # ffmpeg writes its converted voice note here.
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m
+
+volumes:
+  whatsapp-store:
