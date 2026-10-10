@@ -2,7 +2,9 @@ package wabridge
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -135,5 +137,96 @@ func TestRequestOlderMessagesBootstrapsEmptyChat(t *testing.T) {
 	}
 	if res.ChatJID != "15551234567@s.whatsapp.net" {
 		t.Errorf("ChatJID = %q, want the requested chat", res.ChatJID)
+	}
+}
+
+// TestGroupHistoryErrorExplainsTheLimitation locks the message a caller sees
+// for a group with no stored message.
+//
+// This is a measured limitation, not a bug: on-demand history walks back from a
+// message, and a group that has never delivered one has no anchor. An
+// anchor-less request was tried against a real account and WhatsApp answered
+// with the correct conversation but zero messages, so none is sent now.
+func TestGroupHistoryErrorExplainsTheLimitation(t *testing.T) {
+	err := noAnchorError(types.JID{User: "120363000000000000", Server: types.GroupServer})
+	if err == nil {
+		t.Fatal("expected an error for a group with no anchor")
+	}
+	msg := err.Error()
+	for _, want := range []string{"anchor", "starting message"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error should mention %q, got: %v", want, msg)
+		}
+	}
+}
+
+// TestDirectChatNoAnchorUsesRecovery confirms a direct chat takes the recovery
+// path rather than the group error.
+func TestDirectChatNoAnchorUsesRecovery(t *testing.T) {
+	if err := noAnchorError(types.JID{User: "15551234567", Server: types.DefaultUserServer}); err != nil {
+		t.Errorf("a direct chat should not produce the group error, got: %v", err)
+	}
+}
+
+// TestLoadSurvivingGroupAnchorsFiltersGroups covers the session-store helper.
+func TestLoadSurvivingGroupAnchorsFiltersGroups(t *testing.T) {
+	dir := t.TempDir()
+	sessionDB := filepath.Join(dir, "whatsapp.db")
+	raw, err := sql.Open("sqlite", "file:"+sessionDB)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if _, err := raw.Exec(`CREATE TABLE whatsmeow_message_secrets (
+		our_jid TEXT, chat_jid TEXT, sender_jid TEXT, message_id TEXT, key BLOB)`); err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	rows := [][3]string{
+		{"me@s.whatsapp.net", "15551234567@s.whatsapp.net", "15551234567@s.whatsapp.net"},
+		{"me@s.whatsapp.net", "120363000000000000@g.us", "15557654321@s.whatsapp.net"},
+	}
+	for _, r := range rows {
+		if _, err := raw.Exec("INSERT INTO whatsmeow_message_secrets VALUES (?,?,?,?,?)", r[0], r[1], r[2], "AC"+r[1], []byte{1}); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+	raw.Close()
+
+	groups, err := store.LoadSurvivingGroupAnchors(sessionDB)
+	if err != nil {
+		t.Fatalf("LoadSurvivingGroupAnchors: %v", err)
+	}
+	if len(groups) != 1 {
+		t.Fatalf("expected 1 group anchor, got %d", len(groups))
+	}
+	if groups[0].ChatJID != "120363000000000000@g.us" {
+		t.Errorf("group anchor = %q, want the group JID", groups[0].ChatJID)
+	}
+}
+
+// TestKnownGroupIDsReadsChatSettings covers the fallback discovery source.
+func TestKnownGroupIDsReadsChatSettings(t *testing.T) {
+	dir := t.TempDir()
+	sessionDB := filepath.Join(dir, "whatsapp.db")
+	raw, err := sql.Open("sqlite", "file:"+sessionDB)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if _, err := raw.Exec(`CREATE TABLE whatsmeow_chat_settings (
+		our_jid TEXT, chat_jid TEXT, muted_until BIGINT, pinned BOOLEAN, archived BOOLEAN, wasa_root_secret_id TEXT)`); err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	for _, j := range []string{"120363000000000000@g.us", "15551234567@s.whatsapp.net"} {
+		if _, err := raw.Exec("INSERT INTO whatsmeow_chat_settings VALUES (?,?,0,0,0,'')", "me@s.whatsapp.net", j); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+	raw.Close()
+
+	ids, err := store.KnownGroupIDs(sessionDB)
+	if err != nil {
+		t.Fatalf("KnownGroupIDs: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != "120363000000000000@g.us" {
+		t.Errorf("KnownGroupIDs = %v, want the single group JID", ids)
 	}
 }

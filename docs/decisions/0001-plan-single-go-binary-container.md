@@ -502,3 +502,59 @@ The intended scenario works end to end through pi:
 
 Measured: 276 -> 326 messages and `stored_from` moving 2026-08-27 -> 2026-08-23
 from a single 50-message request.
+
+## Phase 10: group verification
+
+### Groups were invisible
+
+A freshly linked device learns which groups exist from app state, but no messages
+have been delivered, so nothing created a chat row. `list_chats` showed only
+direct conversations: an agent could not see a group existed, and had no JID to
+request history for.
+
+Groups are now recorded at connect time from `GetJoinedGroups` (preferred, since
+it carries names) with group JIDs from the session store as a fallback. Each is
+stored with its real name and a zero last-message time, so it is discoverable but
+visibly empty. An existing row is never overwritten, so a group that already has
+messages keeps its last-message time.
+
+This is what the earlier `chat_settings` count of 5 understated: 37 groups are
+actually joined, and all now resolve to real names (<group>, <group>,
+<group>, ...).
+
+### Group history cannot be started, and that is the protocol
+
+Verified against a real account, same code path, different outcome:
+
+| Chat | Request | Messages returned |
+|---|---|---|
+| Direct (Alice Example) | anchored on a stored message | 49 |
+| Group (<group>) | anchor-less | 0 |
+
+An anchor-less request is answered with the correct conversation but zero
+messages, exactly as measured earlier for 145 direct chats. So this is not a
+group-specific defect: on-demand history simply walks BACKWARDS from a message,
+and a group that has never delivered one has no anchor to walk from.
+
+Two things were tried and rejected:
+
+- Building the request directly to set `AccountLid` and
+  `SupportInlineResponse`, which the official clients send and whatsmeow never
+  populates. WhatsApp accepted the request and answered it (logged as
+  `History sync (ON_DEMAND): ... [120363000000000000@g.us]`) but returned zero
+  messages, so the fields are not the blocker.
+- Recovering an anchor from the session store. whatsmeow keeps per-message
+  secrets only for chats whose messages have been decrypted, and a group that
+  has never delivered a message has none.
+
+`get_older_messages` therefore reports the limitation explicitly instead of
+sending a request that cannot succeed, and captures group messages from new
+traffic onwards.
+
+### Diagnostics added
+
+`handleHistorySync` now logs the sync type and conversation IDs, and the raw
+message count per conversation. Without these there is no way to distinguish
+"the request was ignored", "it was answered with unrelated conversations" and "it
+was answered with the right conversation but no messages" - which is the
+distinction that mattered here.

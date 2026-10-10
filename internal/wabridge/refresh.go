@@ -33,6 +33,7 @@ func (b *Bridge) RefreshPlaceholderNames(ctx context.Context) {
 	}
 
 	b.refreshPlaceholderNamesOnce(ctx)
+	b.discoverGroupsOnce(ctx)
 
 	ticker := time.NewTicker(10 * time.Minute)
 	defer ticker.Stop()
@@ -42,6 +43,7 @@ func (b *Bridge) RefreshPlaceholderNames(ctx context.Context) {
 			return
 		case <-ticker.C:
 			b.refreshPlaceholderNamesOnce(ctx)
+			b.discoverGroupsOnce(ctx)
 		}
 	}
 }
@@ -125,8 +127,22 @@ func (b *Bridge) RequestOlderMessages(ctx context.Context, chatJID string, count
 	anchor, err := b.Store.OldestMessageInfo(chatJID)
 	if err != nil {
 		if errors.Is(err, store.ErrNoAnchor) {
-			// No message to anchor on. Fall back to recovering a real message
-			// ID from whatsmeow's own store, which survives a local reset.
+			// A group with no stored message cannot be started at all, and there
+			// is nothing to recover: whatsmeow keeps per-message secrets only for
+			// chats whose messages have been decrypted, and a group that has
+			// never delivered a message has none.
+			//
+			// An anchor-less request was measured and returns nothing (see
+			// bootstrapChat), so none is sent: it would be an outbound request to
+			// the primary device with no benefit.
+			if chat, perr := types.ParseJID(chatJID); perr == nil {
+				if gerr := noAnchorError(chat); gerr != nil {
+					return res, gerr
+				}
+			}
+
+			// Otherwise recover a real message ID from whatsmeow's own store,
+			// which survives a local reset.
 			if err := b.bootstrapChat(ctx, chatJID, count); err != nil {
 				return res, err
 			}
@@ -339,4 +355,80 @@ func (b *Bridge) bootstrapChat(ctx context.Context, chatJID string, count int) e
 		return lastErr
 	}
 	return fmt.Errorf("no recoverable message anchor for %s", chatJID)
+}
+
+// discoverGroupsOnce records the groups the account belongs to.
+//
+// A freshly linked device learns which groups exist from app state, but no
+// messages have been delivered for them, so nothing creates a chat row. Without
+// this an agent cannot see that a group exists: list_chats would show only
+// direct conversations, and there would be no JID to request history for.
+//
+// Groups are stored with their real name and a zero last-message time, so they
+// are discoverable but clearly empty until history is requested.
+func (b *Bridge) discoverGroupsOnce(ctx context.Context) {
+	if b.Client == nil || b.Client.Store.ID == nil {
+		return
+	}
+
+	// Preferred source: WhatsApp's own group list, which carries names.
+	if groups, err := b.Client.GetJoinedGroups(ctx); err == nil {
+		for _, g := range groups {
+			if g == nil || g.JID.IsEmpty() {
+				continue
+			}
+			b.upsertDiscoveredGroup(ctx, g.JID.String(), g.Name)
+		}
+		return
+	}
+
+	// Fallback: group JIDs from the session store, which need a name lookup.
+	sessionDB := filepath.Join(b.Store.Dir(), "whatsapp.db")
+	ids, err := store.KnownGroupIDs(sessionDB)
+	if err != nil {
+		return
+	}
+	for _, id := range ids {
+		b.upsertDiscoveredGroup(ctx, id, "")
+	}
+}
+
+// upsertDiscoveredGroup stores a group chat if it is not already present.
+//
+// An existing row is left untouched: it may already carry messages and a
+// last-message time that must not be reset.
+func (b *Bridge) upsertDiscoveredGroup(ctx context.Context, jid, name string) {
+	if existing, err := b.Store.ChatName(jid); err == nil && existing != "" {
+		return // already known
+	}
+
+	if name == "" {
+		parsed, err := types.ParseJID(jid)
+		if err != nil {
+			return
+		}
+		name = b.ChatName(parsed, jid, nil, "")
+	}
+	if err := b.Store.StoreChat(jid, name, time.Time{}); err != nil {
+		b.Logger.Warnf("Failed to record group %s: %v", jid, err)
+		return
+	}
+	b.Logger.Infof("Discovered group %s (%s)", name, jid)
+}
+
+// noAnchorError returns the error to report when a chat has no stored message to
+// anchor a history request on.
+//
+// Groups get a specific explanation because their case cannot be recovered: there
+// is no per-message secret to fall back on when no message has ever been
+// delivered for the chat. Direct chats return nil, meaning the caller should
+// attempt recovery from a surviving anchor.
+func noAnchorError(chat types.JID) error {
+	if chat.Server != types.GroupServer {
+		return nil
+	}
+	return fmt.Errorf(
+		"%s has no stored message to anchor on. Group history needs a starting message, "+
+			"which appears once the group delivers one; until then only new messages can be captured",
+		chat)
 }

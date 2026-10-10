@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	// Pure-Go SQLite driver: no CGO, no glibc. Registered as "sqlite".
@@ -445,4 +446,56 @@ func LoadSurvivingAnchors(sessionDBPath string) ([]HistoryAnchor, error) {
 		anchors = append(anchors, a)
 	}
 	return anchors, rows.Err()
+}
+
+// KnownGroupIDs reads group JIDs the account belongs to from the session
+// database's chat settings.
+//
+// Groups the account has joined appear here even when no message has ever been
+// stored for them, which is the usual case for a freshly linked device. Without
+// this, an agent cannot see that a group exists at all.
+func KnownGroupIDs(sessionDBPath string) ([]string, error) {
+	db, err := sql.Open("sqlite", "file:"+sessionDBPath+"?mode=ro&_pragma=busy_timeout(5000)")
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+
+	rows, err := db.Query(
+		"SELECT DISTINCT chat_jid FROM whatsmeow_chat_settings WHERE chat_jid LIKE '%@g.us' ORDER BY chat_jid",
+	)
+	if err != nil {
+		return nil, err // table may not exist on a fresh install
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// LoadSurvivingGroupAnchors reads message identities for group chats from the
+// session database.
+//
+// whatsmeow keeps per-message secrets keyed by chat, and for groups these are
+// the only anchor candidates available after a local reset, since a group chat
+// has no message of its own to walk back from.
+func LoadSurvivingGroupAnchors(sessionDBPath string) ([]HistoryAnchor, error) {
+	all, err := LoadSurvivingAnchors(sessionDBPath)
+	if err != nil {
+		return nil, err
+	}
+	var groups []HistoryAnchor
+	for _, a := range all {
+		if strings.HasSuffix(a.ChatJID, "@g.us") {
+			groups = append(groups, a)
+		}
+	}
+	return groups, nil
 }

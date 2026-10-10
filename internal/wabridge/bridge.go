@@ -156,7 +156,23 @@ func (b *Bridge) handleMessage(msg *events.Message) {
 }
 
 func (b *Bridge) handleHistorySync(historySync *events.HistorySync) {
-	fmt.Printf("Received history sync event with %d conversations\n", len(historySync.Data.Conversations))
+	// Log the sync type and conversation IDs: without them there is no way to
+	// tell whether an on-demand request for a group was answered, ignored, or
+	// answered with unrelated conversations.
+	syncType := "UNKNOWN"
+	var ids []string
+	for _, c := range historySync.Data.Conversations {
+		if c.ID != nil {
+			ids = append(ids, *c.ID)
+		}
+	}
+	if historySync.Notification != nil {
+		syncType = historySync.Notification.GetSyncType().String()
+	} else if t := historySync.Data.GetSyncType(); t != 0 || syncType == "UNKNOWN" {
+		syncType = t.String()
+	}
+	b.Logger.Infof("History sync (%s): %d conversation(s) [%s]",
+		syncType, len(historySync.Data.Conversations), strings.Join(ids, ", "))
 
 	for _, conversation := range historySync.Data.Conversations {
 		if conversation.ID == nil {
@@ -180,6 +196,7 @@ func (b *Bridge) handleHistorySync(historySync *events.HistorySync) {
 		name := b.ChatName(jid, chatJID, conversation, "")
 
 		messages := conversation.Messages
+		b.Logger.Infof("History conversation %s: %d raw message(s)", chatJID, len(messages))
 		if len(messages) == 0 {
 			continue
 		}
@@ -210,6 +227,7 @@ func (b *Bridge) handleHistorySync(historySync *events.HistorySync) {
 					content = ext.GetText()
 				}
 			}
+			_ = content
 
 			var mediaType, filename, url string
 			var mediaKey, fileSHA256, fileEncSHA256 []byte
