@@ -356,3 +356,52 @@ func TestChatWithoutMessagesHasNoStoredRange(t *testing.T) {
 		t.Error("StoredFrom/StoredTo should be nil for a chat with no messages")
 	}
 }
+
+// TestListChatsWithoutLastMessage covers the regression where omitting the last
+// message also omitted the JOIN, leaving the projection referencing messages.*
+// and failing with "no such column: messages.content".
+func TestListChatsWithoutLastMessage(t *testing.T) {
+	r, _ := openFixture(t)
+
+	chats, err := r.ListChats(ListChatsParams{Limit: 10, IncludeLastMessage: false, SortBy: "last_active"})
+	if err != nil {
+		t.Fatalf("ListChats: %v", err)
+	}
+	if len(chats) == 0 {
+		t.Fatal("expected chats")
+	}
+	for _, c := range chats {
+		if c.LastMessage != "" || c.LastSender != "" {
+			t.Errorf("chat %s should have no last message, got %q/%q", c.JID, c.LastMessage, c.LastSender)
+		}
+		// The shape fields must still be present and correct.
+		if c.MessageCount == 0 {
+			t.Errorf("chat %s should still report its message count", c.JID)
+		}
+		if c.Kind == "" {
+			t.Errorf("chat %s should still report its kind", c.JID)
+		}
+	}
+}
+
+// TestGetChatWithoutLastMessage is the single-chat form of the same regression.
+func TestGetChatWithoutLastMessage(t *testing.T) {
+	r, _ := openFixture(t)
+
+	got, err := r.GetChat("15551234567@s.whatsapp.net", false)
+	if err != nil {
+		t.Fatalf("GetChat: %v", err)
+	}
+	if got == nil {
+		t.Fatal("GetChat returned nil")
+	}
+	if got.LastMessage != "" {
+		t.Errorf("LastMessage = %q, want empty", got.LastMessage)
+	}
+	if got.MessageCount != 4 {
+		t.Errorf("MessageCount = %d, want 4", got.MessageCount)
+	}
+	if got.StoredFrom == nil || got.StoredTo == nil {
+		t.Error("shape fields should still be populated")
+	}
+}

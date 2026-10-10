@@ -11,26 +11,44 @@ import (
 // read the history identically.
 const messageSelectColumns = "messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.media_type"
 
-// chatSelectColumns adds the conversation-shape fields an agent needs to decide
+// chatShapeColumns are the conversation-shape fields an agent needs to decide
 // whether to fetch older messages: what kind of chat this is, how many messages
-// are stored, and the timestamp range those messages cover.
-const chatSelectColumns = `chats.jid, chats.name, chats.last_message_time,
-	messages.content as last_message, messages.sender as last_sender, messages.is_from_me as last_is_from_me,
+// are stored, and the timestamp range those messages cover. They are correlated
+// subqueries, so they need no JOIN.
+const chatShapeColumns = `chats.jid, chats.name, chats.last_message_time,
 	(SELECT COUNT(*) FROM messages m WHERE m.chat_jid = chats.jid) as message_count,
 	(SELECT MIN(m.timestamp) FROM messages m WHERE m.chat_jid = chats.jid) as stored_from,
 	(SELECT MAX(m.timestamp) FROM messages m WHERE m.chat_jid = chats.jid) as stored_to`
 
-// scanChatRow reads a row projected with chatSelectColumns.
+// chatSelectColumns is the full projection. It requires the messages table to be
+// joined (on chats.last_message_time = messages.timestamp).
+const chatSelectColumns = chatShapeColumns + `,
+	messages.content as last_message, messages.sender as last_sender, messages.is_from_me as last_is_from_me`
+
+// chatSelectColumnsNoLast has the same column count as chatSelectColumns but
+// reports no last message, so scanChatRow works for both. Without this, omitting
+// the last message also omitted the JOIN and left the projection referencing
+// messages.*, which failed with "no such column: messages.content".
+const chatSelectColumnsNoLast = chatShapeColumns + `,
+	NULL as last_message, NULL as last_sender, NULL as last_is_from_me`
+
+// scanChatRow reads a row projected with chatSelectColumns or
+// chatSelectColumnsNoLast, which share a column order:
+// jid, name, last_message_time, message_count, stored_from, stored_to,
+// last_message, last_sender, last_is_from_me.
 func scanChatRow(scan func(dest ...any) error) (*Chat, error) {
 	var c Chat
 	var lastTime sql.NullTime
-	var lastMessage, lastSender sql.NullString
-	var lastIsFromMe sql.NullBool
 	// MIN()/MAX() over the timestamp column come back as text, so these are
 	// parsed with the store's layout rather than relying on driver conversion.
 	var storedFrom, storedTo sql.NullString
-	if err := scan(&c.JID, &c.Name, &lastTime, &lastMessage, &lastSender, &lastIsFromMe,
-		&c.MessageCount, &storedFrom, &storedTo); err != nil {
+	// last_message is NULL when the caller did not join messages, and its column
+	// type is then unknown, so all three are read as nullable text before the
+	// boolean is interpreted.
+	var lastMessage, lastSender sql.NullString
+	var lastIsFromMe sql.NullString
+	if err := scan(&c.JID, &c.Name, &lastTime, &c.MessageCount, &storedFrom, &storedTo,
+		&lastMessage, &lastSender, &lastIsFromMe); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -49,7 +67,10 @@ func scanChatRow(scan func(dest ...any) error) (*Chat, error) {
 	}
 	c.LastMessage = lastMessage.String
 	c.LastSender = lastSender.String
-	c.LastIsFromMe = lastIsFromMe.Bool
+	if lastIsFromMe.Valid {
+		fromMe := lastIsFromMe.String == "1" || lastIsFromMe.String == "true"
+		c.LastIsFromMe = &fromMe
+	}
 	return &c, nil
 }
 
@@ -219,9 +240,10 @@ type ListChatsParams struct {
 // ListChats returns chats matching the filters.
 func (r *Reader) ListChats(p ListChatsParams) ([]Chat, error) {
 	selectParts := `SELECT ` + chatSelectColumns + ` FROM chats`
-
-	if p.IncludeLastMessage {
-		selectParts += ` LEFT JOIN messages ON chats.jid = messages.chat_jid AND chats.last_message_time = messages.timestamp`
+	selectParts += ` LEFT JOIN messages ON chats.jid = messages.chat_jid AND chats.last_message_time = messages.timestamp`
+	if !p.IncludeLastMessage {
+		// Same column count, but the last-message fields are nulled out.
+		selectParts = `SELECT ` + chatSelectColumnsNoLast + ` FROM chats`
 	}
 
 	where := []string{}
@@ -263,6 +285,8 @@ func (r *Reader) GetChat(chatJID string, includeLastMessage bool) (*Chat, error)
 	query := `SELECT ` + chatSelectColumns + ` FROM chats`
 	if includeLastMessage {
 		query += ` LEFT JOIN messages ON chats.jid = messages.chat_jid AND chats.last_message_time = messages.timestamp`
+	} else {
+		query = `SELECT ` + chatSelectColumnsNoLast + ` FROM chats`
 	}
 	query += " WHERE chats.jid = ?"
 

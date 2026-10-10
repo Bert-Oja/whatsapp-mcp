@@ -205,12 +205,21 @@ type searchContactsIn struct {
 	Query string `json:"query" jsonschema:"Search term to match against contact names or phone numbers"`
 }
 
-func (s *Server) searchContacts(ctx context.Context, req *mcp.CallToolRequest, in searchContactsIn) (*mcp.CallToolResult, []tools.Contact, error) {
+func (s *Server) searchContacts(ctx context.Context, req *mcp.CallToolRequest, in searchContactsIn) (*mcp.CallToolResult, contactsResult, error) {
 	contacts, err := s.reader.SearchContacts(in.Query)
 	if err != nil {
-		return nil, nil, err
+		return nil, contactsResult{}, err
 	}
-	return nil, contacts, nil
+	return nil, contactsResult{Contacts: contacts}, nil
+}
+
+// contactsResult is an object envelope for the contact list.
+//
+// The MCP spec requires structuredContent to be a JSON object, and Pi's client
+// rejects an array outright ("Invalid MCP tools/call structured content"). The
+// list therefore travels in a named field rather than as the root value.
+type contactsResult struct {
+	Contacts []tools.Contact `json:"contacts"`
 }
 
 type listMessagesIn struct {
@@ -262,7 +271,7 @@ type listChatsIn struct {
 	SortBy             string `json:"sort_by,omitempty" jsonschema:"Field to sort results by, either last_active or name (default last_active)"`
 }
 
-func (s *Server) listChats(ctx context.Context, req *mcp.CallToolRequest, in listChatsIn) (*mcp.CallToolResult, []tools.Chat, error) {
+func (s *Server) listChats(ctx context.Context, req *mcp.CallToolRequest, in listChatsIn) (*mcp.CallToolResult, chatsResult, error) {
 	limit := in.Limit
 	if limit == 0 {
 		limit = 20
@@ -284,9 +293,9 @@ func (s *Server) listChats(ctx context.Context, req *mcp.CallToolRequest, in lis
 		SortBy:             sortBy,
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, chatsResult{}, err
 	}
-	return nil, chats, nil
+	return nil, chatsResult{Chats: chats}, nil
 }
 
 type getChatIn struct {
@@ -324,16 +333,22 @@ type getContactChatsIn struct {
 	Page  int    `json:"page,omitempty" jsonschema:"Page number for pagination (default 0)"`
 }
 
-func (s *Server) getContactChats(ctx context.Context, req *mcp.CallToolRequest, in getContactChatsIn) (*mcp.CallToolResult, []tools.Chat, error) {
+func (s *Server) getContactChats(ctx context.Context, req *mcp.CallToolRequest, in getContactChatsIn) (*mcp.CallToolResult, chatsResult, error) {
 	limit := in.Limit
 	if limit == 0 {
 		limit = 20
 	}
 	chats, err := s.reader.GetContactChats(in.JID, limit, in.Page)
 	if err != nil {
-		return nil, nil, err
+		return nil, chatsResult{}, err
 	}
-	return nil, chats, nil
+	return nil, chatsResult{Chats: chats}, nil
+}
+
+// chatsResult is the object envelope for chat lists. See contactsResult for why
+// the list cannot be the structuredContent root.
+type chatsResult struct {
+	Chats []tools.Chat `json:"chats"`
 }
 
 type getLastInteractionIn struct {

@@ -38,7 +38,9 @@ type Chat struct {
 	LastMessageTime *time.Time `json:"last_message_time"`
 	LastMessage     string     `json:"last_message,omitempty"`
 	LastSender      string     `json:"last_sender,omitempty"`
-	LastIsFromMe    bool       `json:"last_is_from_me"`
+	// LastIsFromMe is omitted when no last message is included, so a reader can
+	// tell "not applicable" from "false".
+	LastIsFromMe *bool `json:"last_is_from_me,omitempty"`
 	// MessageCount is how many messages are stored locally right now. Only
 	// messages that have arrived or been requested are present, not the whole
 	// conversation as it exists on the phone.

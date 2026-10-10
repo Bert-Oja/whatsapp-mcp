@@ -5,14 +5,19 @@ services:
     container_name: whatsapp-mcp
     restart: unless-stopped
 
-    # Bind to loopback only. This server reads private messages and can send
-    # them; it must never be reachable from the network.
+    # Published on the HOST loopback only: the port is not reachable from the
+    # network. This server reads private messages and can send them.
+    #
+    # The address published here is what restricts exposure. Inside the
+    # container the app must listen on 0.0.0.0, because Docker forwards to the
+    # container's interface, not to its loopback: binding 127.0.0.1 inside makes
+    # the port unreachable from the host.
     ports:
       - "127.0.0.1:8765:8765"
 
     environment:
       STORE_DIR: /data
-      MCP_HTTP_ADDR: 127.0.0.1:8765
+      MCP_HTTP_ADDR: 0.0.0.0:8765
       # Writes are OFF by default. Set to "true" to expose the send tools.
       ALLOW_WRITES: "${ALLOW_WRITES:-false}"
       WA_LOG_LEVEL: "${WA_LOG_LEVEL:-INFO}"
