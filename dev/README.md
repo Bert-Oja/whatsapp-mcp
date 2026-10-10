@@ -1,25 +1,17 @@
 # Development helpers
 
-## `parity_oracle.py`
+## The parity oracle
 
-Generates the golden file used by `TestParityAgainstPythonServer` in
-`internal/tools`.
+`internal/tools/testdata/python_oracle.json` is the recorded behaviour of the
+original Python MCP server, captured before it was removed.
 
-The Python MCP server is being replaced by the Go implementation, so its
-behaviour is frozen as a test oracle before it is deleted. The script imports
-the **real** `whatsapp-mcp-server/whatsapp.py` (it needs only `requests`, which
-is usually already present) and drives it against a fixture database.
+The Go implementation replaced that server, so the captured output is kept as a
+frozen contract and checked by `TestParityAgainstPythonServer` in
+`internal/tools`. The test rebuilds the same fixture database the oracle was
+generated from and compares each tool's output; a mismatch fails and points at
+the exact key that drifted.
 
-Regenerate the golden file whenever the Python server changes:
-
-```bash
-python3 dev/parity_oracle.py <path-to-messages.db> \
-  > internal/tools/testdata/python_oracle.json
-```
-
-Build the fixture database that the Go test uses with the same data as
-`writeParityFixture` in `internal/tools/parity_test.go`. Any mismatch between
-the two sides fails the test and points at the exact key that drifted.
-
-After the Python server is removed (Phase 6), the golden file remains as the
-recorded contract; the regeneration step is then historical only.
+The generator script (`dev/parity_oracle.py`) is gone: it imported the Python
+server, which no longer exists, so the golden file can no longer be regenerated.
+If a tool's contract changes deliberately, update the golden file by hand and
+say why in the commit message.

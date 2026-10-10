@@ -558,3 +558,32 @@ message count per conversation. Without these there is no way to distinguish
 "the request was ignored", "it was answered with unrelated conversations" and "it
 was answered with the right conversation but no messages" - which is the
 distinction that mattered here.
+
+## Phase 11: the Python server is removed
+
+`whatsapp-mcp-server/` (main.py, whatsapp.py, audio.py, pyproject.toml,
+uv.lock) and `dev/parity_oracle.py` are deleted. The Go binary is now the only
+implementation.
+
+Before deleting, parity was re-checked rather than assumed:
+`TestParityAgainstPythonServer` and `TestFormatParity` both passed against the
+recorded oracle. Its captured output is kept in
+`internal/tools/testdata/python_oracle.json` and remains enforced, so the tool
+contract is pinned even though the implementation that defined it is gone.
+
+`parity_oracle.py` had to go with it: the script imported `whatsapp.py` to
+regenerate the golden file, so leaving it would have left a broken tool. The
+golden file is therefore frozen; a deliberate contract change requires editing it
+by hand and explaining why in the commit message. This is recorded in
+`dev/README.md` and in the comments on `TestParityAgainstPythonServer`.
+
+Two consequences worth noting:
+
+- The README's original instructions are obsolete by construction: they describe
+  running a Go bridge and a Python server as separate processes, with `uv`,
+  a `whatsapp-bridge/` directory that no longer exists, and CGO/Windows notes
+  that only applied to `mattn/go-sqlite3`. `README.md` is rewritten for the
+  single binary, with the Windows/CGO section dropped because the pure-Go driver
+  removed the problem.
+- Nothing at runtime needed Python: the Dockerfile and compose file never
+  referenced it.

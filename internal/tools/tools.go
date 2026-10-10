@@ -2,9 +2,10 @@
 // tools. It reads the local SQLite history and delegates sending and media
 // download to the bridge.
 //
-// Output shapes mirror the original Python server in whatsapp-mcp-server/:
-// the message-reading tools return formatted plain text (which the model
-// consumes directly), while the chat and contact tools return structured data.
+// Output shapes preserve the original Python server, whose behaviour is frozen
+// in testdata/python_oracle.json: the message-reading tools return formatted
+// plain text (which the model consumes directly), while the chat and contact
+// tools return structured data.
 package tools
 
 import (

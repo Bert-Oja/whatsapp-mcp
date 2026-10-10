@@ -100,7 +100,8 @@ func openFixture(t *testing.T) (*Reader, *sql.DB) {
 }
 
 // TestFormatParity locks the exact text rendering the Python server produced,
-// byte for byte. These strings were captured from whatsapp-mcp-server.
+// byte for byte. These strings were captured from the original Python server,
+// which the golden oracle in testdata/ also records.
 func TestFormatParity(t *testing.T) {
 	r, _ := openFixture(t)
 

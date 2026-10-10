@@ -62,13 +62,14 @@ func writeParityFixture(t *testing.T, dir string) string {
 // TestParityAgainstPythonServer is the Phase 2 acceptance gate: it compares the
 // Go implementation against output captured from the real Python server.
 //
-// The golden file is produced by dev/parity_oracle.py, which imports the actual
-// whatsapp-mcp-server/whatsapp.py and drives it against the same fixture
-// database (see writeParityFixture). Regenerate it with:
+// The golden file records the original Python server's output, captured before
+// that server was removed. It is a frozen contract: the test rebuilds the same
+// fixture database it was generated from (see writeParityFixture) and compares
+// each tool's output.
 //
-//	python3 dev/parity_oracle.py <fixture.db> > internal/tools/testdata/python_oracle.json
-//
-// A mismatch means the Go port has drifted from the behaviour it preserves.
+// A mismatch means the Go implementation has drifted from the behaviour it
+// replaced. The generator script is gone, so the file can no longer be
+// regenerated; update it by hand only when the change is deliberate.
 func TestParityAgainstPythonServer(t *testing.T) {
 	oraclePath := filepath.Join("testdata", "python_oracle.json")
 	oracleBytes, err := os.ReadFile(oraclePath)

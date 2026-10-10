@@ -10,7 +10,7 @@ import (
 // ConvertToOpusOgg converts an audio file to Opus in an Ogg container and
 // returns the path to the temporary output.
 //
-// These ffmpeg parameters match whatsapp-mcp-server/audio.py, which tunes the
+// These ffmpeg parameters match the original server's audio.py, which tuned the
 // output for WhatsApp voice notes (24 kHz, 32k bitrate, VoIP mode, 60 ms frames).
 func ConvertToOpusOgg(inputFile string) (string, error) {
 	if _, err := os.Stat(inputFile); err != nil {
