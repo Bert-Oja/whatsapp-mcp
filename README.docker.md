@@ -123,3 +123,29 @@ audio file into an Opus/Ogg voice note. The distribution build would add
   and the time range it covers (`stored_from` / `stored_to`), so an agent can
   see whether it needs to reach further back.
 - **Out of sync** — remove the volume (`docker compose down -v`) and pair again.
+- **Container healthy but the port is unreachable** — the app must listen on
+  `0.0.0.0` *inside* the container (`MCP_HTTP_ADDR`); Docker forwards to the
+  container interface, not its loopback. Exposure is still controlled by
+  publishing on the host loopback (`127.0.0.1:8765:8765`).
+
+## Connecting pi
+
+Add the server to `~/.pi/agent/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "whatsapp": {
+      "url": "http://127.0.0.1:8765/mcp",
+      "description": "Read WhatsApp conversations, groups and communities from a locally linked account.",
+      "exposure": "codemode"
+    }
+  }
+}
+```
+
+Then confirm the connection:
+
+```bash
+pi mcp list   # whatsapp: connected, 10 tools (codemode, global)
+```

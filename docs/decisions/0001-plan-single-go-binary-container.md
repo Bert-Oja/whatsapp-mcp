@@ -435,3 +435,70 @@ The `-history-limit` / `-request-history` flags and `REQUEST_HISTORY` /
 `HISTORY_LIMIT` environment variables were removed: there is no automatic
 sweep left to configure. Nothing is fetched at connect time, so a connection
 makes no outbound history requests at all.
+
+## Phase 9: pi wiring, and three bugs it surfaced
+
+`~/.pi/agent/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "whatsapp": {
+      "url": "http://127.0.0.1:8765/mcp",
+      "exposure": "codemode"
+    }
+  }
+}
+```
+
+`exposure: "codemode"` keeps ten read-only tools out of every prompt; an agent
+reaches them from a codemode script. Writes remain off.
+
+`pi mcp list` reports `connected, 10 tools (codemode, global)`.
+
+### Port publishing was broken
+
+The app listened on `127.0.0.1:8765` *inside* the container. Docker forwards to
+the container interface, not its loopback, so the port was unreachable from the
+host. The symptom was misleading: the in-container healthcheck passed, so the
+container reported `healthy`, while a host request got an empty reply.
+
+`MCP_HTTP_ADDR` is now `0.0.0.0:8765` inside the container, and exposure is
+controlled where it belongs, by publishing on the host loopback
+(`127.0.0.1:8765:8765`). Verified: `127.0.0.1` answers, while the public IP and
+the VPN IP both refuse the connection.
+
+Binding `0.0.0.0` inside a container is safe here because the published address
+is loopback-only; the container's own network is not routed to the internet.
+
+### structuredContent must be an object
+
+Three tools returned Go slices, so `structuredContent` was a JSON array. The MCP
+spec requires an object, and Pi rejects the result outright ("Invalid MCP
+tools/call structured content") even though `content[0].text` held valid data.
+This broke `search_contacts`, `get_contact_chats`, and — critically —
+`list_chats`, the entry point for locating a conversation. Lists now travel in a
+named field (`{"chats": [...]}`), with a test asserting every tool's
+structuredContent root is an object.
+
+### include_last_message=false was broken
+
+Omitting the last message also omitted the JOIN, but the projection still
+referenced `messages.*`, so the query failed with `no such column:
+messages.content`. Both projections now share a column order, so the shape fields
+(`kind`, `message_count`, `stored_from`, `stored_to`) are returned either way.
+`last_is_from_me` became a pointer so it is omitted rather than reported as a
+misleading `false` when there is no last message.
+
+### Verified workflow
+
+The intended scenario works end to end through pi:
+
+1. `list_chats` locates the conversation and reports `kind`, `message_count` and
+   the stored range.
+2. The agent judges that the answer lies earlier than `stored_from` and calls
+   `get_older_messages`.
+3. History arrives asynchronously and the next read shows a larger range.
+
+Measured: 276 -> 326 messages and `stored_from` moving 2026-08-27 -> 2026-08-23
+from a single 50-message request.
