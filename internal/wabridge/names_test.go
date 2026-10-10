@@ -130,3 +130,32 @@ func TestChatNameUpgradesStoredPlaceholder(t *testing.T) {
 		t.Errorf("ChatName did not upgrade the placeholder: got %q", got)
 	}
 }
+
+// TestCommunitySuffixLabelsParentsAndSubGroups covers Community labelling.
+func TestCommunitySuffixLabelsParentsAndSubGroups(t *testing.T) {
+	// A Community itself.
+	parent := &types.GroupInfo{JID: types.JID{User: "120363", Server: "g.us"}}
+	parent.IsParent = true
+	if got := communitySuffix(contextBackground(), nil, parent); got != " [Community]" {
+		t.Errorf("parent suffix = %q, want %q", got, " [Community]")
+	}
+
+	// An ordinary group has no suffix.
+	ordinary := &types.GroupInfo{}
+	if got := communitySuffix(contextBackground(), nil, ordinary); got != "" {
+		t.Errorf("ordinary group suffix = %q, want empty", got)
+	}
+
+	// A sub-group falls back to a generic label when the client is unavailable.
+	sub := &types.GroupInfo{}
+	sub.LinkedParentJID = types.JID{User: "120363", Server: "g.us"}
+	got := communitySuffix(contextBackground(), nil, sub)
+	if got == "" || got == " [Community]" {
+		t.Errorf("sub-group suffix = %q, want a sub-group label", got)
+	}
+
+	// nil info must not panic.
+	if got := communitySuffix(contextBackground(), nil, nil); got != "" {
+		t.Errorf("nil info suffix = %q, want empty", got)
+	}
+}

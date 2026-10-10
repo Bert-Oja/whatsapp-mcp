@@ -339,3 +339,60 @@ This is not yet fixed. It is likely to need either canonicalising chats onto
 one identifier, or merging on read (for example resolving every chat JID to a
 canonical PN where a mapping exists), and should be resolved before the
 read tools are considered trustworthy for a whole-account view.
+
+## Phase 7: history backfill, rate limits and ToS risk
+
+### How much history is reachable
+
+Two mechanisms exist, and both come from the linked-device protocol, so they
+carry the same limits WhatsApp Web has:
+
+- The initial sync after pairing returns only a recent window (roughly the
+  most-recently-active chats, ~1000 messages on a large account).
+- On-demand history walks BACKWARDS from a message already held, one page at a
+  time (50 is the recommended page size). Confirmed working here: repeated
+  requests extended one chat from 46 to 418+ messages, reaching back weeks.
+
+Practical consequence: a database reset cannot restart backfill, because there
+is no message to anchor on. Measured against a real account:
+
+- **Anchor-less request** (the proto's anchor fields are optional): 145 chats
+  requested, **zero messages returned**. WhatsApp silently ignores it.
+- **Recovered anchors**: whatsmeow keeps per-message secrets in the session
+  database (`whatsapp.db`), which survives a `messages.db` wipe, and each row
+  carries a real message ID. Anchoring on those returned history, recovering
+  185+ messages into an empty database. This is the bootstrap path used.
+
+Even with anchors, WhatsApp Web itself stops for old chats and tells the user
+to check their phone, so "full history" is bounded by that behaviour, not by
+our loop.
+
+### Rate limits and ToS risk
+
+This is the honest risk assessment, from upstream issues and the mature
+implementations:
+
+- Using an unofficial client is itself a ToS violation: WhatsApp's terms
+  forbid reverse-engineered clients and bulk/automated messaging. Action can
+  range from a warning to a ban.
+- There are real reports of the "Your account may be at risk" warning and of
+  bans across whatsmeow, Baileys and whatsapp-web.js. Upstream closed these as
+  not-planned, with maintainers arguing it is behavioural rather than a protocol
+  defect, and the main correlation reported is automated/bulk sending.
+- Crucially, the reported triggers are SENDING messages, not reading history.
+  No source attributes bans to history sync or to a read-only client. Our
+  deployment is read-only by default for exactly this reason.
+
+Mitigations adopted:
+
+- Writes are opt-in (`-allow-writes`), so the default deployment never sends.
+- Backfill is capped per chat (`-history-limit`, default 200) so a connect does
+  not sweep the whole account.
+- Requests are paced: one page per chat per pass, 2s between requests, increasing
+  pauses (30s up to 10 min), and a chat that stops producing new messages gets a
+  cooldown after 4 barren passes.
+- Deeper history for one conversation is deliberate, via the `extend_history`
+  tool, rather than an automatic account-wide sweep.
+
+Residual risk is not zero: this remains an unofficial client on a personal
+account. The design keeps the account as close to passive as the protocol allows.

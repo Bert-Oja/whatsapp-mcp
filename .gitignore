@@ -4,3 +4,6 @@ whatsapp.log
 
 # Local Go build output (see dev.sh; the host has no Go toolchain)
 .build/
+
+# local debugging scratch
+dbcheck/

@@ -22,6 +22,9 @@ services:
       # Ask WhatsApp for past message history on connect. Uses an unofficial
       # endpoint, may be ignored, and can pull a lot of data.
       REQUEST_HISTORY: "${REQUEST_HISTORY:-false}"
+      # Cap per-chat backfill so a connect does not sweep the whole account.
+      # Use the extend_history tool to go deeper in one conversation.
+      HISTORY_LIMIT: "${HISTORY_LIMIT:-200}"
 
     volumes:
       # Holds whatsapp.db (the linked-device session) and messages.db.

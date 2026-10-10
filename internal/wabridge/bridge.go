@@ -117,7 +117,7 @@ func (b *Bridge) handleEvent(evt interface{}) {
 // Incoming
 
 func (b *Bridge) handleMessage(msg *events.Message) {
-	chatJID := msg.Info.Chat.String()
+	chatJID := b.CanonicalChatJID(msg.Info.Chat).String()
 	sender := msg.Info.Sender.User
 
 	name := b.ChatName(msg.Info.Chat, chatJID, nil, sender)
@@ -168,6 +168,13 @@ func (b *Bridge) handleHistorySync(historySync *events.HistorySync) {
 		if err != nil {
 			b.Logger.Warnf("Failed to parse JID %s: %v", chatJID, err)
 			continue
+		}
+
+		// Store onto the canonical chat so history does not create a second row
+		// for a conversation already held under its LID.
+		if canonical := b.CanonicalChatJID(jid); canonical.String() != chatJID {
+			jid = canonical
+			chatJID = canonical.String()
 		}
 
 		name := b.ChatName(jid, chatJID, conversation, "")
@@ -330,8 +337,13 @@ func (b *Bridge) ChatName(jid types.JID, chatJID string, conversation interface{
 		}
 
 		if name == "" {
+			// Ask WhatsApp for the group's metadata. This also reveals whether
+			// the group is a Community or one of its sub-groups.
 			if groupInfo, err := b.Client.GetGroupInfo(ctx, jid); err == nil && groupInfo.Name != "" {
 				name = groupInfo.Name
+				if suffix := communitySuffix(ctx, b.Client, groupInfo); suffix != "" {
+					name += suffix
+				}
 			} else {
 				name = fmt.Sprintf("Group %s", jid.User)
 			}

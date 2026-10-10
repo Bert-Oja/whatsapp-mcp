@@ -30,7 +30,8 @@ func main() {
 		httpAddr       = flag.String("http", envOr("MCP_HTTP_ADDR", "127.0.0.1:8765"), "address for the MCP Streamable HTTP endpoint")
 		mcpOnly        = flag.Bool("mcp-only", os.Getenv("MCP_ONLY") == "1", "serve MCP without connecting to WhatsApp (for inspecting the tool surface)")
 		allowWrite     = flag.Bool("allow-writes", envBool("ALLOW_WRITES", false), "expose the send_message, send_file and send_audio_message tools (default: read-only)")
-		requestHistory = flag.Bool("request-history", envBool("REQUEST_HISTORY", false), "ask WhatsApp for past message history on connect (uses an unofficial endpoint and may be ignored)")
+		requestHistory = flag.Bool("request-history", envBool("REQUEST_HISTORY", false), "walk history backwards for known chats on connect (uses an unofficial endpoint)")
+		historyLimit   = flag.Int("history-limit", envInt("HISTORY_LIMIT", 200), "max messages to backfill per chat (0 = unlimited); use extend_history to go deeper in one chat")
 	)
 	flag.Parse()
 
@@ -57,16 +58,33 @@ func main() {
 		}
 		fmt.Println("\n✓ Connected to WhatsApp.")
 
+		// The same conversation can be stored twice: live messages arrive
+		// addressed by LID while history uses the phone number. Merge those so a
+		// whole-account view sees each conversation once.
+		go func() {
+			// Wait for the LID mappings that arrive with app state.
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(45 * time.Second):
+			}
+			bridge.CanonicalizeChats(ctx)
+		}()
+
 		// Contact details often arrive after a chat is first seen, so chats can
 		// initially be stored under a placeholder name (a LID or bare number).
 		// Refresh those periodically once contacts have synced.
 		go bridge.RefreshPlaceholderNames(ctx)
 
-		// On-demand history is anchored on a message we already hold, so it can
-		// only run once there is something to anchor to. It pulls older messages
-		// for known chats and is opt-in.
+		// On-demand history can only continue from a message we already hold, so
+		// a freshly reset database has nothing to anchor on. Bootstrap asks for
+		// the latest messages in every known chat first, which creates those
+		// anchors; backfill then walks each chat further back.
 		if *requestHistory {
-			go bridge.RequestHistoryForKnownChats(ctx, 50)
+			go func() {
+				bridge.BootstrapHistory(ctx, 50)
+				bridge.BackfillHistory(ctx, 50, *historyLimit)
+			}()
 		}
 	}
 

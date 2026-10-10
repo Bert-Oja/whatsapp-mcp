@@ -28,9 +28,9 @@ func TestRequestHistoryBeforeRejectsEmptyAnchor(t *testing.T) {
 	}
 }
 
-// TestRequestHistoryForKnownChatsWithoutAnchor confirms the loop skips chats
+// TestBackfillHistoryHandlesChatsWithoutAnchor confirms the loop skips chats
 // that have no message rather than panicking.
-func TestRequestHistoryForKnownChatsWithoutAnchor(t *testing.T) {
+func TestBackfillHistoryHandlesChatsWithoutAnchor(t *testing.T) {
 	b := pairedBridge(t)
 
 	// A chat exists but has no messages.
@@ -43,7 +43,7 @@ func TestRequestHistoryForKnownChatsWithoutAnchor(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		b.RequestHistoryForKnownChats(ctx, 50)
+		b.BackfillHistory(ctx, 50, 0)
 		close(done)
 	}()
 
@@ -51,7 +51,7 @@ func TestRequestHistoryForKnownChatsWithoutAnchor(t *testing.T) {
 	case <-done:
 		// Returned without panicking: the desired behaviour.
 	case <-time.After(25 * time.Second):
-		t.Fatal("RequestHistoryForKnownChats did not return")
+		t.Fatal("BackfillHistory did not return")
 	}
 }
 

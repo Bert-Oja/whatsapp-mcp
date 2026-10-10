@@ -16,9 +16,11 @@ import (
 // fakeSender stands in for the WhatsApp bridge so write tools can be exercised
 // without a network connection.
 type fakeSender struct {
-	lastRecipient string
-	lastMessage   string
-	lastMediaPath string
+	lastRecipient  string
+	lastMessage    string
+	lastMediaPath  string
+	lastExtendChat string
+	lastExtendPage int
 }
 
 func (f *fakeSender) SendMessage(ctx context.Context, recipient, message, mediaPath string) (bool, string) {
@@ -32,10 +34,20 @@ func (f *fakeSender) DownloadMedia(messageID, chatJID string) (bool, string, str
 	return true, "image", "image_1.jpg", "/tmp/image_1.jpg", nil
 }
 
-// expectedTools is the Phase 2 contract: the same twelve tools the Python
-// server exposed, under the same names.
+// ExtendHistoryLimit satisfies HistoryExtender, so the read-only extend_history
+// tool is registered exactly as it is in production.
+func (f *fakeSender) ExtendHistoryLimit(ctx context.Context, chatJID string, wantMessages, pageSize int) (int, error) {
+	f.lastExtendChat = chatJID
+	f.lastExtendPage = pageSize
+	return wantMessages, nil
+}
+
+// expectedTools is the Phase 2 contract: the twelve tools the Python server
+// exposed, under the same names, plus extend_history, which is new in the Go
+// server and has no Python equivalent.
 var expectedTools = []string{
 	"download_media",
+	"extend_history",
 	"get_chat",
 	"get_contact_chats",
 	"get_direct_chat_by_contact",

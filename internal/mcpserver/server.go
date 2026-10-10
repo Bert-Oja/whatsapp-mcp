@@ -23,6 +23,7 @@ type Options struct {
 type Server struct {
 	reader      *tools.Reader
 	sender      tools.Sender
+	extender    HistoryExtender
 	allowWrites bool
 }
 
@@ -45,6 +46,7 @@ var readOnlyTools = map[string]bool{
 	"get_last_interaction":       true,
 	"get_message_context":        true,
 	"download_media":             true,
+	"extend_history":             true,
 }
 
 // New builds an MCP server. Read tools are always registered; the write tools
@@ -53,8 +55,12 @@ var readOnlyTools = map[string]bool{
 // The sender is additionally wrapped in a guard, so that even if a write tool
 // were reached in read-only mode the outbound call would still be refused.
 func New(reader *tools.Reader, sender tools.Sender, opts Options) *mcp.Server {
+	// Capture the extender before the guard wraps the sender. Guarding hides
+	// the concrete type, and history extension is read-only, so it must be
+	// available in the default read-only mode too.
+	extender, _ := sender.(HistoryExtender)
 	sender = newGuard(sender, opts.AllowWrites)
-	s := &Server{reader: reader, sender: sender, allowWrites: opts.AllowWrites}
+	s := &Server{reader: reader, sender: sender, extender: extender, allowWrites: opts.AllowWrites}
 	srv := mcp.NewServer(&mcp.Implementation{
 		Name:    "whatsapp",
 		Version: "0.3.0",
@@ -110,6 +116,13 @@ func New(reader *tools.Reader, sender tools.Sender, opts Options) *mcp.Server {
 		Description: "Download media from a WhatsApp message and get the local file path.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, s.downloadMedia)
+	if s.extender != nil {
+		mcp.AddTool(srv, &mcp.Tool{
+			Name:        "extend_history",
+			Description: "Request older messages for one chat from the primary device. Backfill is capped by default; use this to go deeper in a conversation. History arrives asynchronously.",
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+		}, s.extendHistory)
+	}
 
 	// --- Write tools (opt-in) ---
 	if opts.AllowWrites {

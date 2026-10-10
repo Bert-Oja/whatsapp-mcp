@@ -324,3 +324,125 @@ func (ms *MessageStore) OldestMessageInfo(chatJID string) (types.MessageInfo, er
 		},
 	}, nil
 }
+
+// MergeChat folds the chat at fromJID into the chat at toJID, then removes the
+// source chat. The target is created if it does not exist.
+//
+// A message already present in the target with the same id is dropped rather
+// than duplicated. Returns the number of messages that moved.
+func (ms *MessageStore) MergeChat(fromJID, toJID string) (int, error) {
+	if fromJID == toJID {
+		return 0, nil
+	}
+
+	tx, err := ms.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	var name string
+	var lastTS string
+	if err := tx.QueryRow(
+		"SELECT COALESCE(name, ''), COALESCE(last_message_time, '') FROM chats WHERE jid = ?", toJID,
+	).Scan(&name, &lastTS); err == sql.ErrNoRows {
+		// Target does not exist yet: create it from the source's identity.
+		if err := tx.QueryRow(
+			"SELECT COALESCE(name, ''), COALESCE(last_message_time, '') FROM chats WHERE jid = ?", fromJID,
+		).Scan(&name, &lastTS); err != nil {
+			return 0, err
+		}
+		if _, err := tx.Exec(
+			"INSERT INTO chats (jid, name, last_message_time) VALUES (?, ?, ?)", toJID, name, lastTS,
+		); err != nil {
+			return 0, err
+		}
+	} else if err != nil {
+		return 0, err
+	}
+
+	// OR IGNORE keeps the target's copy when an id already exists there.
+	res, err := tx.Exec("UPDATE OR IGNORE messages SET chat_jid = ? WHERE chat_jid = ?", toJID, fromJID)
+	if err != nil {
+		return 0, err
+	}
+	moved, _ := res.RowsAffected()
+
+	if _, err := tx.Exec("DELETE FROM messages WHERE chat_jid = ?", fromJID); err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec("DELETE FROM chats WHERE jid = ?", fromJID); err != nil {
+		return 0, err
+	}
+
+	// Recompute the surviving chat's last-message time.
+	var newest string
+	if err := tx.QueryRow(
+		"SELECT COALESCE(MAX(timestamp), '') FROM messages WHERE chat_jid = ?", toJID,
+	).Scan(&newest); err != nil {
+		return 0, err
+	}
+	if newest != "" {
+		if _, err := tx.Exec("UPDATE chats SET last_message_time = ? WHERE jid = ?", newest, toJID); err != nil {
+			return 0, err
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return int(moved), nil
+}
+
+// MessageCount returns how many messages are stored for a chat.
+func (ms *MessageStore) MessageCount(chatJID string) (int, error) {
+	var n int
+	if err := ms.db.QueryRow("SELECT COUNT(*) FROM messages WHERE chat_jid = ?", chatJID).Scan(&n); err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+// HistoryAnchor is a message identity recovered from a surviving store, used to
+// bootstrap history when the local message database has no anchors.
+type HistoryAnchor struct {
+	ChatJID   string
+	SenderJID string
+	MessageID string
+}
+
+// LoadSurvivingAnchors reads message identities that survive a messages.db
+// wipe.
+//
+// whatsmeow stores per-message secrets in whatsapp.db (the session database),
+// which is kept across a reset. Each row carries a real chat JID, sender and
+// message ID, so they can seed history requests for chats that would otherwise
+// have no anchor at all.
+//
+// The session database is opened read-only and briefly; it is not the database
+// this store owns.
+func LoadSurvivingAnchors(sessionDBPath string) ([]HistoryAnchor, error) {
+	db, err := sql.Open("sqlite", "file:"+sessionDBPath+"?mode=ro&_pragma=busy_timeout(5000)")
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+
+	rows, err := db.Query(
+		"SELECT chat_jid, sender_jid, message_id FROM whatsmeow_message_secrets ORDER BY rowid LIMIT 5000",
+	)
+	if err != nil {
+		return nil, err // table may not exist on a fresh install
+	}
+	defer rows.Close()
+
+	var anchors []HistoryAnchor
+	for rows.Next() {
+		var a HistoryAnchor
+		if err := rows.Scan(&a.ChatJID, &a.SenderJID, &a.MessageID); err != nil {
+			return nil, err
+		}
+		anchors = append(anchors, a)
+	}
+	return anchors, rows.Err()
+}
