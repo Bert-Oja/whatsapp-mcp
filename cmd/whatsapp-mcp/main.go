@@ -24,12 +24,13 @@ import (
 
 func main() {
 	var (
-		storeDir   = flag.String("store-dir", envOr("STORE_DIR", "store"), "directory holding whatsapp.db, messages.db and downloaded media")
-		pairPhone  = flag.String("pair-phone", os.Getenv("WA_PAIR_PHONE"), "phone number in international format to pair with an 8-digit code instead of a QR code")
-		logLevel   = flag.String("log-level", envOr("WA_LOG_LEVEL", "INFO"), "whatsmeow log level (DEBUG, INFO, WARN, ERROR)")
-		httpAddr   = flag.String("http", envOr("MCP_HTTP_ADDR", "127.0.0.1:8765"), "address for the MCP Streamable HTTP endpoint")
-		mcpOnly    = flag.Bool("mcp-only", os.Getenv("MCP_ONLY") == "1", "serve MCP without connecting to WhatsApp (for inspecting the tool surface)")
-		allowWrite = flag.Bool("allow-writes", envBool("ALLOW_WRITES", false), "expose the send_message, send_file and send_audio_message tools (default: read-only)")
+		storeDir       = flag.String("store-dir", envOr("STORE_DIR", "store"), "directory holding whatsapp.db, messages.db and downloaded media")
+		pairPhone      = flag.String("pair-phone", os.Getenv("WA_PAIR_PHONE"), "phone number in international format to pair with an 8-digit code instead of a QR code")
+		logLevel       = flag.String("log-level", envOr("WA_LOG_LEVEL", "INFO"), "whatsmeow log level (DEBUG, INFO, WARN, ERROR)")
+		httpAddr       = flag.String("http", envOr("MCP_HTTP_ADDR", "127.0.0.1:8765"), "address for the MCP Streamable HTTP endpoint")
+		mcpOnly        = flag.Bool("mcp-only", os.Getenv("MCP_ONLY") == "1", "serve MCP without connecting to WhatsApp (for inspecting the tool surface)")
+		allowWrite     = flag.Bool("allow-writes", envBool("ALLOW_WRITES", false), "expose the send_message, send_file and send_audio_message tools (default: read-only)")
+		requestHistory = flag.Bool("request-history", envBool("REQUEST_HISTORY", false), "ask WhatsApp for past message history on connect (uses an unofficial endpoint and may be ignored)")
 	)
 	flag.Parse()
 
@@ -55,6 +56,18 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Println("\n✓ Connected to WhatsApp.")
+
+		// Contact details often arrive after a chat is first seen, so chats can
+		// initially be stored under a placeholder name (a LID or bare number).
+		// Refresh those periodically once contacts have synced.
+		go bridge.RefreshPlaceholderNames(ctx)
+
+		// On-demand history is anchored on a message we already hold, so it can
+		// only run once there is something to anchor to. It pulls older messages
+		// for known chats and is opt-in.
+		if *requestHistory {
+			go bridge.RequestHistoryForKnownChats(ctx, 50)
+		}
 	}
 
 	// Build the MCP server over the local message history and the bridge.

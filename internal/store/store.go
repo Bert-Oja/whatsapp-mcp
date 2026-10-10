@@ -2,12 +2,14 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"time"
 
 	// Pure-Go SQLite driver: no CGO, no glibc. Registered as "sqlite".
+	"go.mau.fi/whatsmeow/types"
 	_ "modernc.org/sqlite"
 )
 
@@ -209,4 +211,116 @@ func (ms *MessageStore) ChatName(chatJID string) (string, error) {
 	var name string
 	err := ms.db.QueryRow("SELECT name FROM chats WHERE jid = ?", chatJID).Scan(&name)
 	return name, err
+}
+
+// ChatRow is a chat as stored in the database.
+type ChatRow struct {
+	JID             string
+	Name            string
+	LastMessageTime time.Time
+}
+
+// AllChats returns every stored chat. Used to re-resolve placeholder names
+// after contact details arrive.
+func (ms *MessageStore) AllChats() ([]ChatRow, error) {
+	rows, err := ms.db.Query("SELECT jid, COALESCE(name, ''), last_message_time FROM chats")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var chats []ChatRow
+	for rows.Next() {
+		var c ChatRow
+		if err := rows.Scan(&c.JID, &c.Name, &c.LastMessageTime); err != nil {
+			return nil, err
+		}
+		chats = append(chats, c)
+	}
+	return chats, rows.Err()
+}
+
+// ErrNoAnchor reports that a chat has no stored message to anchor a history
+// request on.
+var ErrNoAnchor = errors.New("no stored message to anchor the request")
+
+// NewestMessageInfo returns identity details for the most recent message in a
+// chat, suitable as an anchor for an on-demand history request.
+func (ms *MessageStore) NewestMessageInfo(chatJID string) (types.MessageInfo, error) {
+	var (
+		id     string
+		sender string
+		ts     time.Time
+		fromMe bool
+	)
+	err := ms.db.QueryRow(
+		"SELECT id, sender, timestamp, is_from_me FROM messages WHERE chat_jid = ? ORDER BY timestamp DESC LIMIT 1",
+		chatJID,
+	).Scan(&id, &sender, &ts, &fromMe)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return types.MessageInfo{}, ErrNoAnchor
+		}
+		return types.MessageInfo{}, err
+	}
+
+	chat, perr := types.ParseJID(chatJID)
+	if perr != nil {
+		return types.MessageInfo{}, fmt.Errorf("parsing chat jid %q: %w", chatJID, perr)
+	}
+	senderJID, serr := types.ParseJID(sender)
+	if serr != nil {
+		// Senders are sometimes stored as a bare user or LID number.
+		senderJID = types.JID{User: sender, Server: types.DefaultUserServer}
+	}
+
+	return types.MessageInfo{
+		ID:        id,
+		Timestamp: ts,
+		MessageSource: types.MessageSource{
+			IsFromMe: fromMe,
+			Chat:     chat,
+			Sender:   senderJID,
+		},
+	}, nil
+}
+
+// OldestMessageInfo returns identity details for the oldest message in a chat,
+// used to walk history backwards one page at a time.
+func (ms *MessageStore) OldestMessageInfo(chatJID string) (types.MessageInfo, error) {
+	var (
+		id     string
+		sender string
+		ts     time.Time
+		fromMe bool
+	)
+	err := ms.db.QueryRow(
+		"SELECT id, sender, timestamp, is_from_me FROM messages WHERE chat_jid = ? ORDER BY timestamp ASC LIMIT 1",
+		chatJID,
+	).Scan(&id, &sender, &ts, &fromMe)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return types.MessageInfo{}, ErrNoAnchor
+		}
+		return types.MessageInfo{}, err
+	}
+
+	chat, perr := types.ParseJID(chatJID)
+	if perr != nil {
+		return types.MessageInfo{}, fmt.Errorf("parsing chat jid %q: %w", chatJID, perr)
+	}
+	senderJID, serr := types.ParseJID(sender)
+	if serr != nil {
+		senderJID = types.JID{User: sender, Server: types.DefaultUserServer}
+	}
+
+	return types.MessageInfo{
+		ID:        id,
+		Timestamp: ts,
+		MessageSource: types.MessageSource{
+			IsFromMe: fromMe,
+			Chat:     chat,
+			Sender:   senderJID,
+		},
+	}, nil
 }

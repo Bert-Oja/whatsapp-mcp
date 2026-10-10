@@ -19,6 +19,9 @@ services:
       # Set to an international phone number to pair with an 8-digit code
       # instead of scanning a QR code from the logs.
       WA_PAIR_PHONE: "${WA_PAIR_PHONE:-}"
+      # Ask WhatsApp for past message history on connect. Uses an unofficial
+      # endpoint, may be ignored, and can pull a lot of data.
+      REQUEST_HISTORY: "${REQUEST_HISTORY:-false}"
 
     volumes:
       # Holds whatsapp.db (the linked-device session) and messages.db.

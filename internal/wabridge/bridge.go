@@ -4,7 +4,6 @@ package wabridge
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -61,13 +60,13 @@ func Open(dir string, logger waLog.Logger) (*Bridge, error) {
 		return nil, fmt.Errorf("failed to connect to session database: %w", err)
 	}
 
+	// GetFirstDevice creates a fresh device when none is stored yet. A device
+	// returned here has not been paired, so its session stores (including the
+	// LID map) are only attached after pairing; code that reads them must cope
+	// with that.
 	deviceStore, err := container.GetFirstDevice(context.Background())
 	if err != nil {
-		if err != sql.ErrNoRows {
-			return nil, fmt.Errorf("failed to get device: %w", err)
-		}
-		deviceStore = container.NewDevice()
-		logger.Infof("Created new device")
+		return nil, fmt.Errorf("failed to get device: %w", err)
 	}
 
 	client := whatsmeow.NewClient(deviceStore, logger)
@@ -256,6 +255,44 @@ func (b *Bridge) handleHistorySync(historySync *events.HistorySync) {
 	}
 }
 
+// resolveContactName looks up a display name for a user JID.
+//
+// WhatsApp increasingly addresses users by LID ("100000000000001@lid") rather
+// than phone number. The contact store is keyed by phone-number JIDs, so a LID
+// must first be translated through the LID mapping before it can be looked up;
+// otherwise every LID chat ends up labelled with its numeric ID.
+func (b *Bridge) resolveContactName(ctx context.Context, jid types.JID) (string, bool) {
+	lookup := jid
+
+	if jid.Server == types.HiddenUserServer {
+		// The LID store is only attached once the device is initialised, which
+		// happens on pairing. Guard in case a lookup happens before that.
+		if b.Client.Store.LIDs == nil {
+			return "", false
+		}
+		pn, err := b.Client.Store.LIDs.GetPNForLID(ctx, jid)
+		if err != nil {
+			b.Logger.Debugf("No phone number mapping for LID %s: %v", jid, err)
+			return "", false
+		}
+		lookup = pn
+	}
+
+	if b.Client.Store.Contacts == nil {
+		return "", false
+	}
+
+	contact, err := b.Client.Store.Contacts.GetContact(ctx, lookup)
+	if err == nil && contact.FullName != "" {
+		return contact.FullName, true
+	}
+	if err == nil && contact.PushName != "" {
+		return contact.PushName, true
+	}
+
+	return "", false
+}
+
 // ChatName resolves a display name for a chat, preferring an already-stored
 // name, then group/contact metadata, then fallbacks.
 //
@@ -263,10 +300,11 @@ func (b *Bridge) handleHistorySync(historySync *events.HistorySync) {
 // waHistorySync.Conversation proto, from which DisplayName/Name are read
 // reflectively so this package does not depend on that proto type.
 func (b *Bridge) ChatName(jid types.JID, chatJID string, conversation interface{}, sender string) string {
-	if existing, err := b.Store.ChatName(chatJID); err == nil && existing != "" {
+	if existing, err := b.Store.ChatName(chatJID); err == nil && existing != "" && !isPlaceholderName(existing, jid) {
 		return existing
 	}
 
+	ctx := context.Background()
 	var name string
 
 	if jid.Server == "g.us" {
@@ -292,25 +330,43 @@ func (b *Bridge) ChatName(jid types.JID, chatJID string, conversation interface{
 		}
 
 		if name == "" {
-			if groupInfo, err := b.Client.GetGroupInfo(context.Background(), jid); err == nil && groupInfo.Name != "" {
+			if groupInfo, err := b.Client.GetGroupInfo(ctx, jid); err == nil && groupInfo.Name != "" {
 				name = groupInfo.Name
 			} else {
 				name = fmt.Sprintf("Group %s", jid.User)
 			}
 		}
 	} else {
-		contact, err := b.Client.Store.Contacts.GetContact(context.Background(), jid)
-		switch {
-		case err == nil && contact.FullName != "":
-			name = contact.FullName
-		case sender != "":
+		if resolved, ok := b.resolveContactName(ctx, jid); ok {
+			name = resolved
+		} else if sender != "" {
 			name = sender
-		default:
+		} else {
 			name = jid.User
 		}
 	}
 
 	return name
+}
+
+// isPlaceholderName reports whether a stored chat name is just a stand-in
+// derived from the JID, which happens when a chat was first seen before its
+// contact details were available. Knowing this lets a later sync replace the
+// placeholder with a real name.
+func isPlaceholderName(stored string, jid types.JID) bool {
+	if stored == "" {
+		return true
+	}
+	if stored == jid.User {
+		return true
+	}
+	if stored == jid.String() {
+		return true
+	}
+	if jid.Server == "g.us" && stored == fmt.Sprintf("Group %s", jid.User) {
+		return true
+	}
+	return false
 }
 
 // ---------------------------------------------------------------------------
@@ -596,10 +652,23 @@ func extractDirectPathFromURL(rawURL string) string {
 // ---------------------------------------------------------------------------
 // History
 
-// RequestHistorySync asks WhatsApp for the first page of message history.
-func (b *Bridge) RequestHistorySync(ctx context.Context) error {
+// RequestHistorySync asks WhatsApp for history around a specific message.
+//
+// Despite the name, this does not fetch "recent messages": whatsmeow's
+// BuildHistorySyncRequest builds an on-demand request for messages immediately
+// BEFORE the given message, anchored on a real MessageInfo. Passing no anchor
+// is not possible (the library nil-dereferences), and the request must be sent
+// as a peer message, not as an ordinary chat message.
+//
+// Call RequestHistoryBefore with a message you already have to pull older
+// context for that chat. History arrives asynchronously as events.HistorySync
+// with type ON_DEMAND.
+func (b *Bridge) RequestHistoryBefore(ctx context.Context, anchor types.MessageInfo, count int) error {
 	if b.Client == nil {
 		return fmt.Errorf("client is not initialized")
+	}
+	if anchor.ID == "" {
+		return fmt.Errorf("an anchor message is required (id is empty)")
 	}
 	if !b.Client.IsConnected() {
 		return fmt.Errorf("client is not connected")
@@ -607,12 +676,26 @@ func (b *Bridge) RequestHistorySync(ctx context.Context) error {
 	if b.Client.Store.ID == nil {
 		return fmt.Errorf("client is not logged in")
 	}
+	if count <= 0 {
+		count = 50 // whatsmeow recommends 50 per request
+	}
 
-	historyMsg := b.Client.BuildHistorySyncRequest(nil, 100)
-	if historyMsg == nil {
+	msg := b.Client.BuildHistorySyncRequest(&anchor, count)
+	if msg == nil {
 		return fmt.Errorf("failed to build history sync request")
 	}
 
-	_, err := b.Client.SendMessage(ctx, types.JID{Server: "s.whatsapp.net", User: "status"}, historyMsg)
+	_, err := b.Client.SendPeerMessage(ctx, msg)
 	return err
+}
+
+// RequestHistoryForNewestChat asks for older history in the given chat,
+// anchored on its most recent stored message. Returns ErrNoAnchor when the
+// chat has no stored message to anchor to.
+func (b *Bridge) RequestHistoryForNewestChat(ctx context.Context, chatJID string, count int) error {
+	anchor, err := b.Store.NewestMessageInfo(chatJID)
+	if err != nil {
+		return err
+	}
+	return b.RequestHistoryBefore(ctx, anchor, count)
 }

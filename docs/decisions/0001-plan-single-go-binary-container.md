@@ -291,3 +291,51 @@ and recreating the container, the log is clean: no `SQLITE_BUSY` and no
 
 A regression test (`TestConcurrentWritesDoNotFail`) reproduces the contention
 in-process, and `TestDSNHasRequiredPragmas` locks the required pragmas.
+
+## Phase 6 notes: LID names and on-demand history
+
+### Chats were labelled with raw LIDs
+
+WhatsApp increasingly addresses users by LID (`100000000000001@lid`). The
+contact table is keyed by phone-number JIDs, so looking a LID up directly
+always missed and chats were stored under their numeric ID. Verified against
+the live database: `whatsmeow_contacts` held `15551234567@s.whatsapp.net ->
+Alice Example` and `whatsmeow_lid_map` held `100000000000001 -> 15551234567`, but
+the chat was stored as `100000000000001`.
+
+`ChatName` now translates LID to phone number through `Store.LIDs.GetPNForLID`
+before consulting contacts. Names already stored as placeholders (a bare LID,
+number, JID, or `Group <id>`) are re-resolved by a periodic refresh, because
+contact details often arrive after a chat is first seen.
+
+Confirmed live: `Resolved chat name 100000000000001@lid -> Alice Example`.
+
+### On-demand history requires an anchor
+
+The upstream `requestHistorySync` was never called, and wiring it up as written
+panicked: `BuildHistorySyncRequest(nil, 100)` nil-dereferences because the API
+needs a real `MessageInfo` to anchor on. It also must be sent with
+`SendPeerMessage`, not `SendMessage`.
+
+The real semantics are narrower than the name suggests: it fetches `count`
+messages *before* a given message, one chat at a time, and the response arrives
+as `events.HistorySync` with type `ON_DEMAND`. Implemented as `RequestHistoryBefore`
+(anchor-based) and `RequestHistoryForKnownChats` (walks the oldest stored
+message per chat), behind `-request-history` / `REQUEST_HISTORY`, default off.
+
+Confirmed live: WhatsApp returned a history sync event and 46 messages were
+stored for a chat that previously had one.
+
+### Known issue: LID and phone-number chats are not merged
+
+Enabling history surfaced a problem. The same conversation now exists twice:
+`100000000000001@lid` (the LID-addressed chat) and
+`15551234567@s.whatsapp.net` (the phone-number-addressed chat introduced by the
+history response). Both resolve to the name "Alice Example" but hold different
+messages (0 shared message IDs), so a search over the account sees the
+conversation split across two rows.
+
+This is not yet fixed. It is likely to need either canonicalising chats onto
+one identifier, or merging on read (for example resolving every chat JID to a
+canonical PN where a mapping exists), and should be resolved before the
+read tools are considered trustworthy for a whole-account view.
