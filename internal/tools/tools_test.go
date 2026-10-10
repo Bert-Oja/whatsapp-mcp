@@ -340,9 +340,10 @@ func TestGroupChatIsClassifiedAsGroup(t *testing.T) {
 func TestChatWithoutMessagesHasNoStoredRange(t *testing.T) {
 	r, db := openFixture(t)
 
-	chat := "15551234567@s.whatsapp.net"
+	// A chat with no messages: distinct from the fixture's Alice chat.
+	chat := "15559990000@s.whatsapp.net"
 	if _, err := db.Exec("INSERT INTO chats (jid, name, last_message_time) VALUES (?, ?, ?)",
-		chat, "Alice Example", "2026-04-18 12:00:00+00:00"); err != nil {
+		chat, "Empty Chat", "2026-04-18 12:00:00+00:00"); err != nil {
 		t.Fatalf("insert chat: %v", err)
 	}
 

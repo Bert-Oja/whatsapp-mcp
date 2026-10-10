@@ -296,19 +296,19 @@ in-process, and `TestDSNHasRequiredPragmas` locks the required pragmas.
 
 ### Chats were labelled with raw LIDs
 
-WhatsApp increasingly addresses users by LID (`100000000000001@lid`). The
+WhatsApp increasingly addresses users by LID (`<lid>@lid`). The
 contact table is keyed by phone-number JIDs, so looking a LID up directly
 always missed and chats were stored under their numeric ID. Verified against
-the live database: `whatsmeow_contacts` held `15551234567@s.whatsapp.net ->
-Alice Example` and `whatsmeow_lid_map` held `100000000000001 -> 15551234567`, but
-the chat was stored as `100000000000001`.
+the live database: `whatsmeow_contacts` held `<contact-pn>@s.whatsapp.net ->
+<contact>` and `whatsmeow_lid_map` held `<lid> -> <contact-pn>`, but
+the chat was stored as `<lid>`.
 
 `ChatName` now translates LID to phone number through `Store.LIDs.GetPNForLID`
 before consulting contacts. Names already stored as placeholders (a bare LID,
 number, JID, or `Group <id>`) are re-resolved by a periodic refresh, because
 contact details often arrive after a chat is first seen.
 
-Confirmed live: `Resolved chat name 100000000000001@lid -> Alice Example`.
+Confirmed live: `Resolved chat name <lid>@lid -> <contact>`.
 
 ### On-demand history requires an anchor
 
@@ -329,9 +329,9 @@ stored for a chat that previously had one.
 ### Known issue: LID and phone-number chats are not merged
 
 Enabling history surfaced a problem. The same conversation now exists twice:
-`100000000000001@lid` (the LID-addressed chat) and
-`15551234567@s.whatsapp.net` (the phone-number-addressed chat introduced by the
-history response). Both resolve to the name "Alice Example" but hold different
+`<lid>@lid` (the LID-addressed chat) and
+`<contact-pn>@s.whatsapp.net` (the phone-number-addressed chat introduced by the
+history response). Both resolve to the name "<contact>" but hold different
 messages (0 shared message IDs), so a search over the account sees the
 conversation split across two rows.
 
@@ -519,8 +519,7 @@ visibly empty. An existing row is never overwritten, so a group that already has
 messages keeps its last-message time.
 
 This is what the earlier `chat_settings` count of 5 understated: 37 groups are
-actually joined, and all now resolve to real names (<group>, <group>,
-<group>, ...).
+actually joined, and all now resolve to real names (names omitted here).
 
 ### Group history cannot be started, and that is the protocol
 
@@ -528,7 +527,7 @@ Verified against a real account, same code path, different outcome:
 
 | Chat | Request | Messages returned |
 |---|---|---|
-| Direct (Alice Example) | anchored on a stored message | 49 |
+| Direct (<contact>) | anchored on a stored message | 49 |
 | Group (<group>) | anchor-less | 0 |
 
 An anchor-less request is answered with the correct conversation but zero
@@ -541,7 +540,7 @@ Two things were tried and rejected:
 - Building the request directly to set `AccountLid` and
   `SupportInlineResponse`, which the official clients send and whatsmeow never
   populates. WhatsApp accepted the request and answered it (logged as
-  `History sync (ON_DEMAND): ... [120363000000000000@g.us]`) but returned zero
+  `History sync (ON_DEMAND): ... [<group-jid>@g.us]`) but returned zero
   messages, so the fields are not the blocker.
 - Recovering an anchor from the session store. whatsmeow keeps per-message
   secrets only for chats whose messages have been decrypted, and a group that
