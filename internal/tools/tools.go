@@ -27,13 +27,45 @@ type Message struct {
 }
 
 // Chat is a conversation with its most recent message.
+//
+// Kind and the stored-range fields exist so an agent can identify which thread
+// it is looking at and judge whether it needs to fetch older messages, without
+// guessing from the JID.
 type Chat struct {
 	JID             string     `json:"jid"`
 	Name            string     `json:"name"`
+	Kind            string     `json:"kind"`
 	LastMessageTime *time.Time `json:"last_message_time"`
 	LastMessage     string     `json:"last_message,omitempty"`
 	LastSender      string     `json:"last_sender,omitempty"`
 	LastIsFromMe    bool       `json:"last_is_from_me"`
+	// MessageCount is how many messages are stored locally right now. Only
+	// messages that have arrived or been requested are present, not the whole
+	// conversation as it exists on the phone.
+	MessageCount int `json:"message_count"`
+	// StoredFrom and StoredTo bound the local history for this chat. If an agent
+	// needs something older than StoredFrom, it should call get_older_messages.
+	StoredFrom *time.Time `json:"stored_from,omitempty"`
+	StoredTo   *time.Time `json:"stored_to,omitempty"`
+}
+
+// ChatKind classifies a conversation from its JID and resolved name.
+//
+// Communities are WhatsApp groups that contain other groups; we label them at
+// name-resolution time, so the label is the signal here.
+func ChatKind(jid, name string) string {
+	switch {
+	case strings.Contains(name, "[Community:") || strings.HasSuffix(name, "[Community]"):
+		return "community"
+	case strings.HasSuffix(jid, "@g.us"):
+		return "group"
+	case strings.HasSuffix(jid, "@broadcast"), strings.HasSuffix(jid, "@newsletter"):
+		return "broadcast"
+	case strings.HasSuffix(jid, "@lid"), strings.HasSuffix(jid, "@s.whatsapp.net"):
+		return "direct"
+	default:
+		return "unknown"
+	}
 }
 
 // Contact is a person or business the account has chatted with.

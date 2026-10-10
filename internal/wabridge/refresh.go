@@ -2,15 +2,16 @@ package wabridge
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
-	"sync"
 	"time"
 
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/types"
 
 	"github.com/Bert-Oja/whatsapp-mcp/internal/store"
+	"github.com/Bert-Oja/whatsapp-mcp/internal/tools"
 )
 
 // RefreshPlaceholderNames periodically replaces placeholder chat names (a bare
@@ -81,118 +82,71 @@ func (b *Bridge) refreshPlaceholderNamesOnce(ctx context.Context) {
 	}
 }
 
-// BackfillHistory walks history backwards continuously while enabled.
+// RequestOlderMessages asks for one small block of messages older than the
+// oldest message held for a chat.
 //
-// On-demand history is anchored on the oldest message we hold for a chat, so
-// each request reaches further back than the last. A single page is small (the
-// library recommends 50), so filling a conversation takes many requests: this
-// keeps issuing them, pausing between passes, until every chat stops producing
-// new messages or ctx is cancelled.
+// This is the on-demand primitive: nothing runs automatically. An agent that has
+// identified a conversation calls it, and each call walks one page further back.
+// Page size is kept small (default 50, the size whatsmeow recommends) so a
+// single request is a modest, bounded operation rather than an account-wide
+// sweep.
 //
-// A chat that returns no new messages is given a growing cooldown so it is not
-// polled forever; it is retried occasionally in case the phone can supply more
-// later.
-func (b *Bridge) BackfillHistory(ctx context.Context, pageSize, limit int) {
-	// Let the connection settle before sending peer requests.
-	select {
-	case <-ctx.Done():
-		return
-	case <-time.After(15 * time.Second):
+// It returns the anchor the request was based on, so the caller can tell whether
+// a later call actually advanced (a repeated anchor means the previous request
+// produced nothing, usually because no more history is available).
+func (b *Bridge) RequestOlderMessages(ctx context.Context, chatJID string, count int) (tools.HistoryRequestResult, error) {
+	res := tools.HistoryRequestResult{ChatJID: chatJID}
+
+	// Normalise the page size first: this is input validation, and callers
+	// should see the effective size even when the request cannot be sent.
+	if count <= 0 {
+		count = 50
+	}
+	if count > maxRequestPageSize {
+		count = maxRequestPageSize
+	}
+	res.RequestedCount = count
+
+	if b.Client == nil {
+		return res, fmt.Errorf("client is not initialized")
+	}
+	if !b.Client.IsConnected() {
+		return res, fmt.Errorf("client is not connected")
+	}
+	if b.Client.Store.ID == nil {
+		return res, fmt.Errorf("client is not logged in")
 	}
 
-	if pageSize <= 0 {
-		pageSize = 50 // whatsmeow recommends 50 per request
+	before, err := b.Store.MessageCount(chatJID)
+	if err != nil {
+		return res, err
 	}
 
-	// Per-chat state: consecutive passes that produced nothing, and the oldest
-	// message we have already anchored on (so an unanswered request is not
-	// re-sent immediately).
-	type chatState struct {
-		barren     int
-		lastAnchor string
+	anchor, err := b.Store.OldestMessageInfo(chatJID)
+	if err != nil {
+		if errors.Is(err, store.ErrNoAnchor) {
+			// No message to anchor on. Fall back to recovering a real message
+			// ID from whatsmeow's own store, which survives a local reset.
+			if err := b.bootstrapChat(ctx, chatJID, count); err != nil {
+				return res, err
+			}
+			res.Bootstrapped = true
+			res.AnchorID = "(recovered)"
+			return res, nil
+		}
+		return res, err
 	}
-	states := map[string]*chatState{}
 
-	const maxBarrenPasses = 4
-	pause := 30 * time.Second
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(pause):
-		}
-
-		if !b.Client.IsConnected() || b.Client.Store.ID == nil {
-			continue // wait for reconnection
-		}
-
-		chats, err := b.Store.AllChats()
-		if err != nil {
-			b.Logger.Warnf("Failed to list chats for history backfill: %v", err)
-			continue
-		}
-
-		requested := 0
-		for _, c := range chats {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-			}
-
-			st := states[c.JID]
-			if st == nil {
-				st = &chatState{}
-				states[c.JID] = st
-			}
-			if st.barren >= maxBarrenPasses {
-				continue // this chat has gone quiet
-			}
-			if eff := b.effectiveHistoryLimit(c.JID, limit); eff > 0 {
-				if n, err := b.Store.MessageCount(c.JID); err == nil && n >= eff {
-					continue // reached the configured cap for this chat
-				}
-			}
-
-			anchor, err := b.Store.OldestMessageInfo(c.JID)
-			if err != nil {
-				continue // nothing to anchor on in this chat
-			}
-			if anchor.ID == st.lastAnchor {
-				// Same anchor as last pass: the previous request has not been
-				// answered yet, so do not send it again.
-				st.barren++
-				continue
-			}
-
-			if err := b.RequestHistoryBefore(ctx, anchor, pageSize); err != nil {
-				b.Logger.Warnf("History request for %s failed: %v", c.JID, err)
-				st.barren++
-				continue
-			}
-
-			st.lastAnchor = anchor.ID
-			requested++
-
-			// Space requests out; they are peer messages to the primary device.
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(2 * time.Second):
-			}
-		}
-
-		if requested == 0 {
-			b.Logger.Infof("History backfill idle: no chat has more history to fetch")
-		}
-
-		// Slow down as the account goes quiet, but never stop entirely.
-		if pause < 10*time.Minute {
-			pause += 30 * time.Second
-		}
+	if err := b.RequestHistoryBefore(ctx, anchor, count); err != nil {
+		return res, err
 	}
+	res.AnchorID = anchor.ID
+	res.MessagesBefore = before
+	return res, nil
 }
+
+// maxRequestPageSize bounds a single on-demand page.
+const maxRequestPageSize = 50
 
 // CanonicalizeChats merges chats that address the same conversation under
 // different identifiers.
@@ -283,40 +237,6 @@ func (b *Bridge) CanonicalChatJID(jid types.JID) types.JID {
 	return pn.ToNonAD()
 }
 
-// historyLimitOverrides holds per-chat caps raised by an explicit request.
-var historyLimitOverrides sync.Map // chatJID -> int
-
-// effectiveHistoryLimit returns the per-chat cap, preferring an explicit
-// override from a manual request. Zero means unlimited.
-func (b *Bridge) effectiveHistoryLimit(chatJID string, base int) int {
-	if v, ok := historyLimitOverrides.Load(chatJID); ok {
-		if n, ok := v.(int); ok && n > base {
-			return n
-		}
-	}
-	return base
-}
-
-// ExtendHistoryLimit raises how many messages may be backfilled for one chat
-// and immediately requests a page further back.
-//
-// This is the manual escape hatch from the default cap: a deliberate,
-// user-initiated request for one conversation, rather than an automatic sweep
-// over every chat.
-func (b *Bridge) ExtendHistoryLimit(ctx context.Context, chatJID string, wantMessages, pageSize int) (int, error) {
-	anchor, err := b.Store.OldestMessageInfo(chatJID)
-	if err != nil {
-		return 0, err
-	}
-	if err := b.RequestHistoryBefore(ctx, anchor, pageSize); err != nil {
-		return 0, err
-	}
-	if wantMessages > 0 {
-		historyLimitOverrides.Store(chatJID, wantMessages)
-	}
-	return wantMessages, nil
-}
-
 // communitySuffix describes a group's position in a Community, so a sub-group
 // is not mistaken for a standalone group and a parent is recognisable.
 //
@@ -346,10 +266,11 @@ func communitySuffix(ctx context.Context, client *whatsmeow.Client, info *types.
 	return label
 }
 
-// BootstrapHistory recovers history for a database with no anchors.
+// bootstrapChat recovers a starting point for a single chat that has no stored
+// messages to anchor on.
 //
 // On-demand history walks BACKWARDS from a message we already hold, so an empty
-// messages.db cannot start backfill at all. Two approaches were tried:
+// messages.db cannot make a request at all. Two approaches were tried:
 //
 //  1. An anchor-less request (the proto's anchor fields are optional). Measured
 //     against a real account: 145 chats requested, zero messages returned.
@@ -359,66 +280,37 @@ func communitySuffix(ctx context.Context, client *whatsmeow.Client, info *types.
 //     survives a messages.db wipe, and each row carries a real message ID. This
 //     is the path used here.
 //
-// With no anchors available at all, the only way to repopulate is for messages
-// to arrive naturally (new traffic) or to re-pair the device.
-// BootstrapHistory gives every known conversation a starting point.
-//
-// A freshly reset database has no messages, and on-demand history can only
-// continue from a message already held, so backfill would immediately report
-// "no more history to fetch". This enumerates the chats WhatsApp already knows
-// about (contacts and joined groups), asks for the latest messages in each, and
-// thereby creates the anchors that BackfillHistory needs.
-func (b *Bridge) BootstrapHistory(ctx context.Context, count int) {
-	if b.Client == nil || b.Client.Store.ID == nil {
-		b.Logger.Warnf("Skipping history bootstrap: not logged in")
-		return
-	}
-	if !b.Client.IsConnected() {
-		b.Logger.Warnf("Skipping history bootstrap: not connected")
-		return
-	}
-	if count <= 0 {
-		count = 50
-	}
-
+// It is scoped to one chat on purpose: recovering message IDs account-wide would
+// mean messaging every contact, which is exactly the sweep this design avoids.
+// With no recovered anchor for the chat, history can only refill from new
+// traffic.
+func (b *Bridge) bootstrapChat(ctx context.Context, chatJID string, count int) error {
 	sessionDB := filepath.Join(b.Store.Dir(), "whatsapp.db")
 	anchors, err := store.LoadSurvivingAnchors(sessionDB)
 	if err != nil {
-		b.Logger.Warnf("No surviving message anchors found (%v); history can only refill from new traffic", err)
-		return
+		return fmt.Errorf("no recoverable message anchor for %s: %w", chatJID, err)
 	}
+
+	chat, err := types.ParseJID(chatJID)
+	if err != nil {
+		return fmt.Errorf("parsing chat jid %q: %w", chatJID, err)
+	}
+	canonical := b.CanonicalChatJID(chat).String()
 
 	ownUser := ""
 	if own := b.Client.Store.ID; own != nil {
 		ownUser = own.User
 	}
 
-	seen := map[string]bool{}
-	requested := 0
+	var lastErr error
 	for _, a := range anchors {
 		if ctx.Err() != nil {
-			return
+			return ctx.Err()
 		}
-
-		chatJID := a.ChatJID
-		// Prefer the canonical chat so bootstrap and live traffic agree.
-		if jid, perr := types.ParseJID(chatJID); perr == nil && jid.Server != types.GroupServer {
-			chatJID = b.CanonicalChatJID(jid).String()
-		}
-		if seen[chatJID] {
-			continue
-		}
-		seen[chatJID] = true
-
-		// Only bootstrap chats that are still empty.
-		if n, err := b.Store.MessageCount(chatJID); err == nil && n > 0 {
+		if a.ChatJID != chatJID && a.ChatJID != canonical {
 			continue
 		}
 
-		chat, perr := types.ParseJID(chatJID)
-		if perr != nil {
-			continue
-		}
 		sender, serr := types.ParseJID(a.SenderJID)
 		if serr != nil {
 			sender = types.JID{User: a.SenderJID, Server: types.DefaultUserServer}
@@ -436,22 +328,15 @@ func (b *Bridge) BootstrapHistory(ctx context.Context, count int) {
 			},
 		}
 		if err := b.RequestHistoryBefore(ctx, anchor, count); err != nil {
-			b.Logger.Warnf("Bootstrap history for %s failed: %v", chatJID, err)
+			lastErr = err
 			continue
 		}
-		b.Logger.Infof("Requested history before recovered anchor in %s", chatJID)
-		requested++
-
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(2 * time.Second):
-		}
+		b.Logger.Infof("Bootstrapped %s from a recovered message anchor", chatJID)
+		return nil
 	}
 
-	if requested == 0 {
-		b.Logger.Infof("No empty chat had a recoverable anchor; nothing to bootstrap")
-	} else {
-		b.Logger.Infof("History bootstrap requested %d chat(s) from surviving anchors", requested)
+	if lastErr != nil {
+		return lastErr
 	}
+	return fmt.Errorf("no recoverable message anchor for %s", chatJID)
 }

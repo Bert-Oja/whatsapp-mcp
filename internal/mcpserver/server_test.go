@@ -34,12 +34,12 @@ func (f *fakeSender) DownloadMedia(messageID, chatJID string) (bool, string, str
 	return true, "image", "image_1.jpg", "/tmp/image_1.jpg", nil
 }
 
-// ExtendHistoryLimit satisfies HistoryExtender, so the read-only extend_history
-// tool is registered exactly as it is in production.
-func (f *fakeSender) ExtendHistoryLimit(ctx context.Context, chatJID string, wantMessages, pageSize int) (int, error) {
+// RequestOlderMessages satisfies HistoryRequester, so the read-only
+// get_older_messages tool is registered exactly as it is in production.
+func (f *fakeSender) RequestOlderMessages(ctx context.Context, chatJID string, count int) (tools.HistoryRequestResult, error) {
 	f.lastExtendChat = chatJID
-	f.lastExtendPage = pageSize
-	return wantMessages, nil
+	f.lastExtendPage = count
+	return tools.HistoryRequestResult{ChatJID: chatJID, RequestedCount: count, AnchorID: "anchor-1"}, nil
 }
 
 // expectedTools is the Phase 2 contract: the twelve tools the Python server
@@ -47,7 +47,7 @@ func (f *fakeSender) ExtendHistoryLimit(ctx context.Context, chatJID string, wan
 // server and has no Python equivalent.
 var expectedTools = []string{
 	"download_media",
-	"extend_history",
+	"get_older_messages",
 	"get_chat",
 	"get_contact_chats",
 	"get_direct_chat_by_contact",

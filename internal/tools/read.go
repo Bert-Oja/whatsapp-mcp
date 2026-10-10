@@ -11,6 +11,48 @@ import (
 // read the history identically.
 const messageSelectColumns = "messages.timestamp, messages.sender, chats.name, messages.content, messages.is_from_me, chats.jid, messages.id, messages.media_type"
 
+// chatSelectColumns adds the conversation-shape fields an agent needs to decide
+// whether to fetch older messages: what kind of chat this is, how many messages
+// are stored, and the timestamp range those messages cover.
+const chatSelectColumns = `chats.jid, chats.name, chats.last_message_time,
+	messages.content as last_message, messages.sender as last_sender, messages.is_from_me as last_is_from_me,
+	(SELECT COUNT(*) FROM messages m WHERE m.chat_jid = chats.jid) as message_count,
+	(SELECT MIN(m.timestamp) FROM messages m WHERE m.chat_jid = chats.jid) as stored_from,
+	(SELECT MAX(m.timestamp) FROM messages m WHERE m.chat_jid = chats.jid) as stored_to`
+
+// scanChatRow reads a row projected with chatSelectColumns.
+func scanChatRow(scan func(dest ...any) error) (*Chat, error) {
+	var c Chat
+	var lastTime sql.NullTime
+	var lastMessage, lastSender sql.NullString
+	var lastIsFromMe sql.NullBool
+	// MIN()/MAX() over the timestamp column come back as text, so these are
+	// parsed with the store's layout rather than relying on driver conversion.
+	var storedFrom, storedTo sql.NullString
+	if err := scan(&c.JID, &c.Name, &lastTime, &lastMessage, &lastSender, &lastIsFromMe,
+		&c.MessageCount, &storedFrom, &storedTo); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	c.Kind = ChatKind(c.JID, c.Name)
+	if lastTime.Valid {
+		t := lastTime.Time
+		c.LastMessageTime = &t
+	}
+	if t, ok := parseStoredTime(storedFrom); ok {
+		c.StoredFrom = &t
+	}
+	if t, ok := parseStoredTime(storedTo); ok {
+		c.StoredTo = &t
+	}
+	c.LastMessage = lastMessage.String
+	c.LastSender = lastSender.String
+	c.LastIsFromMe = lastIsFromMe.Bool
+	return &c, nil
+}
+
 // GetMessageContext returns the target message with up to before messages
 // preceding it and after messages following it.
 func (r *Reader) GetMessageContext(messageID string, before, after int) (MessageContext, error) {
@@ -176,9 +218,7 @@ type ListChatsParams struct {
 
 // ListChats returns chats matching the filters.
 func (r *Reader) ListChats(p ListChatsParams) ([]Chat, error) {
-	selectParts := `SELECT chats.jid, chats.name, chats.last_message_time,
-		messages.content as last_message, messages.sender as last_sender, messages.is_from_me as last_is_from_me
-		FROM chats`
+	selectParts := `SELECT ` + chatSelectColumns + ` FROM chats`
 
 	if p.IncludeLastMessage {
 		selectParts += ` LEFT JOIN messages ON chats.jid = messages.chat_jid AND chats.last_message_time = messages.timestamp`
@@ -209,68 +249,34 @@ func (r *Reader) ListChats(p ListChatsParams) ([]Chat, error) {
 
 	chats := []Chat{}
 	for rows.Next() {
-		var c Chat
-		var lastTime sql.NullTime
-		var lastMessage, lastSender sql.NullString
-		var lastIsFromMe sql.NullBool
-		if err := rows.Scan(&c.JID, &c.Name, &lastTime, &lastMessage, &lastSender, &lastIsFromMe); err != nil {
+		c, err := scanChatRow(rows.Scan)
+		if err != nil {
 			return nil, err
 		}
-		if lastTime.Valid {
-			t := lastTime.Time
-			c.LastMessageTime = &t
-		}
-		c.LastMessage = lastMessage.String
-		c.LastSender = lastSender.String
-		c.LastIsFromMe = lastIsFromMe.Bool
-		chats = append(chats, c)
+		chats = append(chats, *c)
 	}
 	return chats, rows.Err()
 }
 
 // GetChat returns one chat by JID.
 func (r *Reader) GetChat(chatJID string, includeLastMessage bool) (*Chat, error) {
-	query := `SELECT chats.jid, chats.name, chats.last_message_time,
-		messages.content as last_message, messages.sender as last_sender, messages.is_from_me as last_is_from_me
-		FROM chats`
+	query := `SELECT ` + chatSelectColumns + ` FROM chats`
 	if includeLastMessage {
 		query += ` LEFT JOIN messages ON chats.jid = messages.chat_jid AND chats.last_message_time = messages.timestamp`
 	}
 	query += " WHERE chats.jid = ?"
 
-	return r.scanChat(r.db.QueryRow(query, chatJID).Scan)
+	return scanChatRow(r.db.QueryRow(query, chatJID).Scan)
 }
 
 // GetDirectChatByContact returns the first non-group chat matching the number.
 func (r *Reader) GetDirectChatByContact(senderPhoneNumber string) (*Chat, error) {
-	return r.scanChat(r.db.QueryRow(`
-		SELECT chats.jid, chats.name, chats.last_message_time,
-			messages.content as last_message, messages.sender as last_sender, messages.is_from_me as last_is_from_me
+	return scanChatRow(r.db.QueryRow(`
+		SELECT `+chatSelectColumns+`
 		FROM chats
 		LEFT JOIN messages ON chats.jid = messages.chat_jid AND chats.last_message_time = messages.timestamp
 		WHERE chats.jid LIKE ? AND chats.jid NOT LIKE '%@g.us'
 		LIMIT 1`, "%"+senderPhoneNumber+"%").Scan)
-}
-
-func (r *Reader) scanChat(scan func(dest ...any) error) (*Chat, error) {
-	var c Chat
-	var lastTime sql.NullTime
-	var lastMessage, lastSender sql.NullString
-	var lastIsFromMe sql.NullBool
-	if err := scan(&c.JID, &c.Name, &lastTime, &lastMessage, &lastSender, &lastIsFromMe); err != nil {
-		if err == sql.ErrNoRows {
-			return nil, nil
-		}
-		return nil, err
-	}
-	if lastTime.Valid {
-		t := lastTime.Time
-		c.LastMessageTime = &t
-	}
-	c.LastMessage = lastMessage.String
-	c.LastSender = lastSender.String
-	c.LastIsFromMe = lastIsFromMe.Bool
-	return &c, nil
 }
 
 // SearchContacts finds contacts by name or phone number.
@@ -307,12 +313,11 @@ func (r *Reader) SearchContacts(query string) ([]Contact, error) {
 // GetContactChats lists chats that involve the contact.
 func (r *Reader) GetContactChats(jid string, limit, page int) ([]Chat, error) {
 	rows, err := r.db.Query(`
-		SELECT DISTINCT c.jid, c.name, c.last_message_time,
-			m.content as last_message, m.sender as last_sender, m.is_from_me as last_is_from_me
-		FROM chats c
-		JOIN messages m ON c.jid = m.chat_jid
-		WHERE m.sender = ? OR c.jid = ?
-		ORDER BY c.last_message_time DESC
+		SELECT DISTINCT `+chatSelectColumns+` FROM chats
+		LEFT JOIN messages m ON chats.jid = m.chat_jid
+		WHERE (SELECT COUNT(*) FROM messages mm WHERE mm.chat_jid = chats.jid AND mm.sender = ?) > 0
+			OR chats.jid = ?
+		ORDER BY chats.last_message_time DESC
 		LIMIT ? OFFSET ?`, jid, jid, limit, page*limit)
 	if err != nil {
 		return nil, err
@@ -321,21 +326,11 @@ func (r *Reader) GetContactChats(jid string, limit, page int) ([]Chat, error) {
 
 	chats := []Chat{}
 	for rows.Next() {
-		var c Chat
-		var lastTime sql.NullTime
-		var lastMessage, lastSender sql.NullString
-		var lastIsFromMe sql.NullBool
-		if err := rows.Scan(&c.JID, &c.Name, &lastTime, &lastMessage, &lastSender, &lastIsFromMe); err != nil {
+		c, err := scanChatRow(rows.Scan)
+		if err != nil {
 			return nil, err
 		}
-		if lastTime.Valid {
-			t := lastTime.Time
-			c.LastMessageTime = &t
-		}
-		c.LastMessage = lastMessage.String
-		c.LastSender = lastSender.String
-		c.LastIsFromMe = lastIsFromMe.Bool
-		chats = append(chats, c)
+		chats = append(chats, *c)
 	}
 	return chats, rows.Err()
 }
@@ -357,6 +352,21 @@ func (r *Reader) GetLastInteraction(jid string) (string, error) {
 		return "", err
 	}
 	return r.formatMessage(m, true), nil
+}
+
+// parseStoredTime parses a timestamp column read as text, accepting the store's
+// layout as well as the RFC3339 form a NULL-safe MIN/MAX may produce.
+func parseStoredTime(v sql.NullString) (time.Time, bool) {
+	if !v.Valid || v.String == "" {
+		return time.Time{}, false
+	}
+	if t, err := time.Parse(store.TimeLayout, v.String); err == nil {
+		return t, true
+	}
+	if t, err := time.Parse(time.RFC3339Nano, v.String); err == nil {
+		return t, true
+	}
+	return time.Time{}, false
 }
 
 // ---------------------------------------------------------------------------

@@ -266,3 +266,93 @@ func TestGetDirectChatByContact(t *testing.T) {
 		t.Fatalf("unexpected chat: %+v", chat)
 	}
 }
+
+// TestChatKindClassification covers the thread/group/community signal an agent
+// uses to decide whether a chat needs deeper history fetched.
+func TestChatKindClassification(t *testing.T) {
+	cases := []struct {
+		jid, name, want string
+	}{
+		{"15551234567@s.whatsapp.net", "Alice Example", "direct"},
+		{"100000000000001@lid", "Alice Example", "direct"},
+		{"120363000000000002@g.us", "Weekend Plans", "group"},
+		{"120363000000000002@g.us", "Weekend Plans [Community]", "community"},
+		{"120363000000000001@g.us", "Announcements [Community: Neighbours]", "community"},
+		{"status@broadcast", "", "broadcast"},
+	}
+	for _, c := range cases {
+		if got := ChatKind(c.jid, c.name); got != c.want {
+			t.Errorf("ChatKind(%q, %q) = %q, want %q", c.jid, c.name, got, c.want)
+		}
+	}
+}
+
+// TestChatReportsStoredRangeAndCount verifies an agent can tell which messages
+// are held locally, and therefore whether it needs to request older ones.
+func TestChatReportsStoredRangeAndCount(t *testing.T) {
+	r, _ := openFixture(t)
+
+	got, err := r.GetChat("15551234567@s.whatsapp.net", true)
+	if err != nil {
+		t.Fatalf("GetChat: %v", err)
+	}
+	if got == nil {
+		t.Fatal("GetChat returned nil")
+	}
+	if got.Kind != "direct" {
+		t.Errorf("Kind = %q, want direct", got.Kind)
+	}
+	if got.MessageCount != 4 {
+		t.Errorf("MessageCount = %d, want 4", got.MessageCount)
+	}
+	if got.StoredFrom == nil || got.StoredTo == nil {
+		t.Fatal("StoredFrom/StoredTo should be set for a chat with messages")
+	}
+	wantFrom, _ := time.Parse("2006-01-02 15:04:05", "2026-04-18 12:00:00")
+	wantTo, _ := time.Parse("2006-01-02 15:04:05", "2026-04-18 12:05:00")
+	if !got.StoredFrom.Equal(wantFrom) {
+		t.Errorf("StoredFrom = %v, want %v", got.StoredFrom, wantFrom)
+	}
+	if !got.StoredTo.Equal(wantTo) {
+		t.Errorf("StoredTo = %v, want %v", got.StoredTo, wantTo)
+	}
+}
+
+// TestGroupChatIsClassifiedAsGroup covers the group fixture.
+func TestGroupChatIsClassifiedAsGroup(t *testing.T) {
+	r, _ := openFixture(t)
+
+	got, err := r.GetChat("120363000000000000@g.us", true)
+	if err != nil {
+		t.Fatalf("GetChat: %v", err)
+	}
+	if got.Kind != "group" {
+		t.Errorf("Kind = %q, want group", got.Kind)
+	}
+	if got.MessageCount != 2 {
+		t.Errorf("MessageCount = %d, want 2", got.MessageCount)
+	}
+}
+
+// TestChatWithoutMessagesHasNoStoredRange covers an empty chat, where an agent
+// should be told there is nothing local rather than given bogus times.
+func TestChatWithoutMessagesHasNoStoredRange(t *testing.T) {
+	r, db := openFixture(t)
+
+	chat := "15551234567@s.whatsapp.net"
+	if _, err := db.Exec("INSERT INTO chats (jid, name, last_message_time) VALUES (?, ?, ?)",
+		chat, "Alice Example", "2026-04-18 12:00:00+00:00"); err != nil {
+		t.Fatalf("insert chat: %v", err)
+	}
+
+	got, err := r.GetChat(chat, true)
+	if err != nil {
+		t.Fatalf("GetChat: %v", err)
+	}
+	if got.MessageCount != 0 {
+		t.Errorf("MessageCount = %d, want 0", got.MessageCount)
+	}
+	if got.StoredFrom != nil || got.StoredTo != nil {
+		t.Error("StoredFrom/StoredTo should be nil for a chat with no messages")
+	}
+}

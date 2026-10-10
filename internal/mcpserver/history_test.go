@@ -7,24 +7,23 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// TestExtendHistoryIsAvailableReadOnly confirms the escape hatch from the
-// backfill cap works without enabling writes, since it does not send messages.
-func TestExtendHistoryIsAvailableReadOnly(t *testing.T) {
+// TestGetOlderMessagesIsAvailableReadOnly confirms on-demand history works
+// without enabling writes, since it does not send chat messages.
+func TestGetOlderMessagesIsAvailableReadOnly(t *testing.T) {
 	session, sender := newReadOnlySession(t)
 	ctx := context.Background()
 
 	res, err := session.CallTool(ctx, &mcp.CallToolParams{
-		Name: "extend_history",
+		Name: "get_older_messages",
 		Arguments: map[string]any{
-			"chat_jid":      "15551234567@s.whatsapp.net",
-			"message_limit": 500,
+			"chat_jid": "15551234567@s.whatsapp.net",
 		},
 	})
 	if err != nil {
-		t.Fatalf("extend_history call failed: %v", err)
+		t.Fatalf("get_older_messages call failed: %v", err)
 	}
 	if res.IsError {
-		t.Fatalf("extend_history returned an error: %v", res.Content)
+		t.Fatalf("get_older_messages returned an error: %v", res.Content)
 	}
 	if sender.lastExtendChat != "15551234567@s.whatsapp.net" {
 		t.Errorf("forwarded chat = %q, want the requested JID", sender.lastExtendChat)
@@ -34,12 +33,25 @@ func TestExtendHistoryIsAvailableReadOnly(t *testing.T) {
 	}
 }
 
-// TestExtendHistoryRequiresChatJID covers the input validation.
-func TestExtendHistoryRequiresChatJID(t *testing.T) {
+// TestGetOlderMessagesRejectsOversizedPage enforces the small-page design.
+func TestGetOlderMessagesRejectsOversizedPage(t *testing.T) {
 	session, _ := newReadOnlySession(t)
 
 	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{
-		Name:      "extend_history",
+		Name:      "get_older_messages",
+		Arguments: map[string]any{"chat_jid": "x@s.whatsapp.net", "count": 500},
+	})
+	if err == nil && !res.IsError {
+		t.Fatal("expected an error for a count above the 50 cap")
+	}
+}
+
+// TestGetOlderMessagesRequiresChatJID covers the input validation.
+func TestGetOlderMessagesRequiresChatJID(t *testing.T) {
+	session, _ := newReadOnlySession(t)
+
+	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "get_older_messages",
 		Arguments: map[string]any{},
 	})
 	if err == nil && !res.IsError {

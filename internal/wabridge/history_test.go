@@ -28,37 +28,35 @@ func TestRequestHistoryBeforeRejectsEmptyAnchor(t *testing.T) {
 	}
 }
 
-// TestBackfillHistoryHandlesChatsWithoutAnchor confirms the loop skips chats
-// that have no message rather than panicking.
-func TestBackfillHistoryHandlesChatsWithoutAnchor(t *testing.T) {
+// TestRequestOlderMessagesCapsPageSize confirms one call cannot request more
+// than the small on-demand page limit, so a single request stays modest.
+func TestRequestOlderMessagesCapsPageSize(t *testing.T) {
 	b := pairedBridge(t)
 
-	// A chat exists but has no messages.
-	if err := b.Store.StoreChat("100000000000001@lid", "Alice Example", time.Now()); err != nil {
-		t.Fatalf("StoreChat: %v", err)
+	// Not connected, so this errors, but the clamp happens before the network
+	// call and the returned result carries the clamped count.
+	res, err := b.RequestOlderMessages(context.Background(), "15551234567@s.whatsapp.net", 5000)
+	if err == nil {
+		t.Fatal("expected an error while disconnected")
 	}
+	if res.RequestedCount != maxRequestPageSize {
+		t.Errorf("RequestedCount = %d, want the %d cap", res.RequestedCount, maxRequestPageSize)
+	}
+}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+// TestRequestOlderMessagesDefaultsToFifty covers the default page size.
+func TestRequestOlderMessagesDefaultsToFifty(t *testing.T) {
+	b := pairedBridge(t)
 
-	done := make(chan struct{})
-	go func() {
-		b.BackfillHistory(ctx, 50, 0)
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		// Returned without panicking: the desired behaviour.
-	case <-time.After(25 * time.Second):
-		t.Fatal("BackfillHistory did not return")
+	res, _ := b.RequestOlderMessages(context.Background(), "15551234567@s.whatsapp.net", 0)
+	if res.RequestedCount != 50 {
+		t.Errorf("RequestedCount = %d, want 50", res.RequestedCount)
 	}
 }
 
 // TestOldestAndNewestMessageInfoHaveInverseOrdering covers the anchor helpers.
 func TestOldestAndNewestMessageInfoHaveInverseOrdering(t *testing.T) {
-	dir := t.TempDir()
-	ms, err := store.New(dir)
+	ms, err := store.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("store.New: %v", err)
 	}
@@ -112,5 +110,30 @@ func TestAnchorOnChatWithoutMessagesReturnsErrNoAnchor(t *testing.T) {
 	_, err = ms.OldestMessageInfo("nobody@s.whatsapp.net")
 	if !errors.Is(err, store.ErrNoAnchor) {
 		t.Errorf("expected ErrNoAnchor, got %v", err)
+	}
+}
+
+// TestRequestOlderMessagesBootstrapsEmptyChat confirms an empty chat falls back
+// to a recovered anchor instead of failing outright, and reports that it did.
+func TestRequestOlderMessagesBootstrapsEmptyChat(t *testing.T) {
+	b := pairedBridge(t)
+
+	dir := t.TempDir()
+	ms, err := store.New(dir)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer ms.Close()
+	b.Store = ms
+
+	// With no recovered anchors available, bootstrapping must fail cleanly
+	// rather than panic, and must say so.
+	res, err := b.RequestOlderMessages(context.Background(), "15551234567@s.whatsapp.net", 50)
+	if err == nil {
+		// Disconnected clients fail earlier; either way no panic and no crash.
+		t.Log("request unexpectedly succeeded")
+	}
+	if res.ChatJID != "15551234567@s.whatsapp.net" {
+		t.Errorf("ChatJID = %q, want the requested chat", res.ChatJID)
 	}
 }

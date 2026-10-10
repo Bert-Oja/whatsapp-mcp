@@ -23,7 +23,7 @@ type Options struct {
 type Server struct {
 	reader      *tools.Reader
 	sender      tools.Sender
-	extender    HistoryExtender
+	requester   HistoryRequester
 	allowWrites bool
 }
 
@@ -46,7 +46,7 @@ var readOnlyTools = map[string]bool{
 	"get_last_interaction":       true,
 	"get_message_context":        true,
 	"download_media":             true,
-	"extend_history":             true,
+	"get_older_messages":         true,
 }
 
 // New builds an MCP server. Read tools are always registered; the write tools
@@ -55,12 +55,12 @@ var readOnlyTools = map[string]bool{
 // The sender is additionally wrapped in a guard, so that even if a write tool
 // were reached in read-only mode the outbound call would still be refused.
 func New(reader *tools.Reader, sender tools.Sender, opts Options) *mcp.Server {
-	// Capture the extender before the guard wraps the sender. Guarding hides
-	// the concrete type, and history extension is read-only, so it must be
+	// Capture the history requester before the guard wraps the sender. Guarding
+	// hides the concrete type, and history retrieval is read-only, so it must be
 	// available in the default read-only mode too.
-	extender, _ := sender.(HistoryExtender)
+	requester, _ := sender.(HistoryRequester)
 	sender = newGuard(sender, opts.AllowWrites)
-	s := &Server{reader: reader, sender: sender, extender: extender, allowWrites: opts.AllowWrites}
+	s := &Server{reader: reader, sender: sender, requester: requester, allowWrites: opts.AllowWrites}
 	srv := mcp.NewServer(&mcp.Implementation{
 		Name:    "whatsapp",
 		Version: "0.3.0",
@@ -78,12 +78,12 @@ func New(reader *tools.Reader, sender tools.Sender, opts Options) *mcp.Server {
 	}, s.searchContacts)
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "list_messages",
-		Description: "Get WhatsApp messages matching specified criteria with optional context.",
+		Description: "Get WhatsApp messages matching specified criteria with optional context. Only locally stored messages are returned; history is not fetched automatically.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, s.listMessages)
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "list_chats",
-		Description: "Get WhatsApp chats matching specified criteria.",
+		Description: "List WhatsApp conversations, including direct chats, groups and communities, matching the given criteria. Each result reports its kind, how many messages are stored locally, and the time range those cover; use get_older_messages when a conversation needs to be examined further back than stored_from.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, s.listChats)
 	mcp.AddTool(srv, &mcp.Tool{
@@ -116,12 +116,12 @@ func New(reader *tools.Reader, sender tools.Sender, opts Options) *mcp.Server {
 		Description: "Download media from a WhatsApp message and get the local file path.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, s.downloadMedia)
-	if s.extender != nil {
+	if s.requester != nil {
 		mcp.AddTool(srv, &mcp.Tool{
-			Name:        "extend_history",
-			Description: "Request older messages for one chat from the primary device. Backfill is capped by default; use this to go deeper in a conversation. History arrives asynchronously.",
+			Name:        "get_older_messages",
+			Description: "Fetch older messages for one chat or group from the primary device, up to 50 at a time. History is never fetched automatically; call this when a conversation needs to be examined further back. Each call walks one page further back, so call it again for more. History arrives asynchronously, so wait briefly and then re-read the chat.",
 			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
-		}, s.extendHistory)
+		}, s.getOlderMessages)
 	}
 
 	// --- Write tools (opt-in) ---

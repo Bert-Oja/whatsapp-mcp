@@ -3,67 +3,78 @@ package mcpserver
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/Bert-Oja/whatsapp-mcp/internal/tools"
 )
 
-// HistoryExtender can request older messages for a chat from the primary
-// device. It is a separate interface from Sender so the read-only build does
-// not depend on any sending capability.
-type HistoryExtender interface {
-	// ExtendHistoryLimit raises the cap for one chat and requests a page of
-	// older messages. It returns the new cap and how many messages were
-	// requested.
-	ExtendHistoryLimit(ctx context.Context, chatJID string, wantMessages, pageSize int) (int, error)
+// HistoryRequester can ask the primary device for older messages in one chat.
+// It is separate from Sender so the read-only build does not depend on any
+// sending capability.
+type HistoryRequester interface {
+	RequestOlderMessages(ctx context.Context, chatJID string, count int) (tools.HistoryRequestResult, error)
 }
 
-// extendHistoryResult is returned by the extend_history tool.
-type extendHistoryResult struct {
+// getOlderMessagesInput asks for more history in one conversation.
+type getOlderMessagesInput struct {
+	ChatJID string `json:"chat_jid" jsonschema:"the chat or group JID to pull older messages from, as returned by list_chats"`
+	Count   int    `json:"count,omitempty" jsonschema:"how many older messages to request, 1-50 (default 50)"`
+}
+
+// getOlderMessagesResult reports what the request asked for.
+type getOlderMessagesResult struct {
 	ChatJID        string `json:"chat_jid"`
-	MessageLimit   int    `json:"message_limit"`
 	RequestedCount int    `json:"requested_count"`
+	MessagesBefore int    `json:"messages_before"`
+	AnchorID       string `json:"anchor_id"`
+	Bootstrapped   bool   `json:"bootstrapped"`
 	Message        string `json:"message"`
 }
 
-type extendHistoryInput struct {
-	ChatJID        string `json:"chat_jid" jsonschema:"the chat JID to pull older messages for, as returned by list_chats"`
-	MessageLimit   int    `json:"message_limit,omitempty" jsonschema:"raise the per-chat cap to this many messages (0 keeps the current cap)"`
-	RequestedCount int    `json:"requested_count,omitempty" jsonschema:"how many older messages to request in this page (default 50)"`
-}
-
-// extendHistory asks the primary device for older messages in one chat.
+// getOlderMessages requests one small block of older messages in a chat.
 //
-// Backfill is capped by default so a single connect does not sweep the whole
-// account. This tool is the deliberate escape hatch: it raises the cap for one
-// conversation and requests a page immediately.
-func (s *Server) extendHistory(ctx context.Context, _ *mcp.CallToolRequest, in extendHistoryInput) (*mcp.CallToolResult, any, error) {
-	if s.extender == nil {
-		return nil, nil, fmt.Errorf("history extension is not available")
+// Nothing is fetched automatically: a conversation is only extended when a tool
+// call asks for it. Each call walks one page further back, so an agent can
+// iterate if it needs more. History arrives asynchronously and is stored by the
+// bridge, so the caller should re-read the chat afterwards.
+func (s *Server) getOlderMessages(ctx context.Context, _ *mcp.CallToolRequest, in getOlderMessagesInput) (*mcp.CallToolResult, getOlderMessagesResult, error) {
+	if s.requester == nil {
+		return nil, getOlderMessagesResult{}, fmt.Errorf("history retrieval is not available")
 	}
-	if in.ChatJID == "" {
-		return nil, nil, fmt.Errorf("chat_jid is required")
+	if strings.TrimSpace(in.ChatJID) == "" {
+		return nil, getOlderMessagesResult{}, fmt.Errorf("chat_jid is required")
 	}
-	count := in.RequestedCount
+	count := in.Count
 	if count <= 0 {
 		count = 50
 	}
+	if count > 50 {
+		return nil, getOlderMessagesResult{}, fmt.Errorf("count must be 1-50, got %d", count)
+	}
 
-	limit, err := s.extender.ExtendHistoryLimit(ctx, in.ChatJID, in.MessageLimit, count)
+	res, err := s.requester.RequestOlderMessages(ctx, in.ChatJID, count)
 	if err != nil {
-		return nil, nil, fmt.Errorf("requesting older messages: %w", err)
+		return nil, getOlderMessagesResult{}, fmt.Errorf("requesting older messages: %w", err)
 	}
 
-	// History arrives asynchronously, so this reports the request, not delivery.
-	msg := fmt.Sprintf("Requested %d older message(s) for %s. History arrives asynchronously; re-run list_messages shortly to see them.", count, in.ChatJID)
-	if limit > 0 {
-		msg = fmt.Sprintf("Per-chat cap is now %d messages. %s", limit, msg)
+	out := getOlderMessagesResult{
+		ChatJID:        res.ChatJID,
+		RequestedCount: res.RequestedCount,
+		MessagesBefore: res.MessagesBefore,
+		AnchorID:       res.AnchorID,
+		Bootstrapped:   res.Bootstrapped,
 	}
-
-	out := extendHistoryResult{
-		ChatJID:        in.ChatJID,
-		MessageLimit:   limit,
-		RequestedCount: count,
-		Message:        msg,
+	switch {
+	case res.Bootstrapped:
+		out.Message = fmt.Sprintf(
+			"No local message existed for %s, so history was bootstrapped from a recovered message anchor. Wait a few seconds, then re-read the chat.",
+			res.ChatJID)
+	default:
+		out.Message = fmt.Sprintf(
+			"Requested %d older message(s) for %s, walking back from message %s. History arrives asynchronously; re-run list_messages or get_chat shortly. If re-running does not increase the message count, no older history is available.",
+			res.RequestedCount, res.ChatJID, res.AnchorID)
 	}
 	return nil, out, nil
 }

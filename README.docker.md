@@ -39,8 +39,8 @@ ALLOW_WRITES=true docker compose up -d
 
 | | Tools exposed |
 |---|---|
-| Default (`ALLOW_WRITES=false`) | 9 read-only tools |
-| `ALLOW_WRITES=true` | the 9 read tools plus the 3 send tools |
+| Default (`ALLOW_WRITES=false`) | 10 read-only tools |
+| `ALLOW_WRITES=true` | the 10 read tools plus the 3 send tools |
 
 Every tool carries MCP annotations (`readOnlyHint`), so clients can also make
 their own permission decisions.
@@ -117,4 +117,9 @@ audio file into an Opus/Ogg voice note. The distribution build would add
 - **Device limit reached** — remove a linked device in WhatsApp, then retry.
 - **Messages not appearing** — the initial history sync can take several
   minutes for large accounts.
+- **Older messages** — history is not fetched automatically. An agent asks for
+  it with `get_older_messages` (up to 50 messages per call) after locating the
+  conversation with `list_chats`. Each result reports the local message count
+  and the time range it covers (`stored_from` / `stored_to`), so an agent can
+  see whether it needs to reach further back.
 - **Out of sync** — remove the volume (`docker compose down -v`) and pair again.

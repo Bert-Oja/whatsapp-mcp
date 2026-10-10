@@ -396,3 +396,42 @@ Mitigations adopted:
 
 Residual risk is not zero: this remains an unofficial client on a personal
 account. The design keeps the account as close to passive as the protocol allows.
+
+## Phase 8: on-demand history instead of automatic backfill
+
+The automatic sweep was removed. History is now purely agent-driven, which
+matches how the account is actually used: an agent is asked to check or build
+something from a past conversation, it locates the chat or group, and requests
+the messages it needs.
+
+### Thread awareness
+
+`list_chats`, `get_chat` and `get_contact_chats` now report:
+
+- `kind`: `direct`, `group`, `community` or `broadcast`, derived from the JID
+  and the resolved name (Community labels are added at name-resolution time).
+- `message_count`: how many messages are stored locally right now.
+- `stored_from` / `stored_to`: the time range those local messages cover.
+
+This is what lets an agent decide whether it needs more history: if the answer
+to a question lies before `stored_from`, it calls `get_older_messages`, rather
+than guessing from the JID or reading everything.
+
+### One tool, small pages
+
+`get_older_messages(chat_jid, count)` replaces the previous `extend_history`:
+
+- `count` is 1-50, default 50, and a larger value is rejected rather than
+  clamped silently. The page size is deliberately small so each request is a
+  modest, bounded operation.
+- Each call walks one page further back from the oldest stored message, so an
+  agent iterates when it needs more.
+- It reports the anchor used and the message count beforehand, so a repeated
+  anchor signals that no older history is available.
+- For a chat with no local messages, it bootstraps from a recovered anchor (see
+  Phase 7) instead of failing.
+
+The `-history-limit` / `-request-history` flags and `REQUEST_HISTORY` /
+`HISTORY_LIMIT` environment variables were removed: there is no automatic
+sweep left to configure. Nothing is fetched at connect time, so a connection
+makes no outbound history requests at all.

@@ -24,14 +24,12 @@ import (
 
 func main() {
 	var (
-		storeDir       = flag.String("store-dir", envOr("STORE_DIR", "store"), "directory holding whatsapp.db, messages.db and downloaded media")
-		pairPhone      = flag.String("pair-phone", os.Getenv("WA_PAIR_PHONE"), "phone number in international format to pair with an 8-digit code instead of a QR code")
-		logLevel       = flag.String("log-level", envOr("WA_LOG_LEVEL", "INFO"), "whatsmeow log level (DEBUG, INFO, WARN, ERROR)")
-		httpAddr       = flag.String("http", envOr("MCP_HTTP_ADDR", "127.0.0.1:8765"), "address for the MCP Streamable HTTP endpoint")
-		mcpOnly        = flag.Bool("mcp-only", os.Getenv("MCP_ONLY") == "1", "serve MCP without connecting to WhatsApp (for inspecting the tool surface)")
-		allowWrite     = flag.Bool("allow-writes", envBool("ALLOW_WRITES", false), "expose the send_message, send_file and send_audio_message tools (default: read-only)")
-		requestHistory = flag.Bool("request-history", envBool("REQUEST_HISTORY", false), "walk history backwards for known chats on connect (uses an unofficial endpoint)")
-		historyLimit   = flag.Int("history-limit", envInt("HISTORY_LIMIT", 200), "max messages to backfill per chat (0 = unlimited); use extend_history to go deeper in one chat")
+		storeDir   = flag.String("store-dir", envOr("STORE_DIR", "store"), "directory holding whatsapp.db, messages.db and downloaded media")
+		pairPhone  = flag.String("pair-phone", os.Getenv("WA_PAIR_PHONE"), "phone number in international format to pair with an 8-digit code instead of a QR code")
+		logLevel   = flag.String("log-level", envOr("WA_LOG_LEVEL", "INFO"), "whatsmeow log level (DEBUG, INFO, WARN, ERROR)")
+		httpAddr   = flag.String("http", envOr("MCP_HTTP_ADDR", "127.0.0.1:8765"), "address for the MCP Streamable HTTP endpoint")
+		mcpOnly    = flag.Bool("mcp-only", os.Getenv("MCP_ONLY") == "1", "serve MCP without connecting to WhatsApp (for inspecting the tool surface)")
+		allowWrite = flag.Bool("allow-writes", envBool("ALLOW_WRITES", false), "expose the send_message, send_file and send_audio_message tools (default: read-only)")
 	)
 	flag.Parse()
 
@@ -76,16 +74,9 @@ func main() {
 		// Refresh those periodically once contacts have synced.
 		go bridge.RefreshPlaceholderNames(ctx)
 
-		// On-demand history can only continue from a message we already hold, so
-		// a freshly reset database has nothing to anchor on. Bootstrap asks for
-		// the latest messages in every known chat first, which creates those
-		// anchors; backfill then walks each chat further back.
-		if *requestHistory {
-			go func() {
-				bridge.BootstrapHistory(ctx, 50)
-				bridge.BackfillHistory(ctx, 50, *historyLimit)
-			}()
-		}
+		// History is deliberately NOT fetched here. Reading history is an
+		// outbound request to the primary device, so it only happens when an
+		// agent asks for it through the get_older_messages tool.
 	}
 
 	// Build the MCP server over the local message history and the bridge.
