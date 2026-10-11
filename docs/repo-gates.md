@@ -28,18 +28,38 @@ only option, which is what a linear history on `main` needs.
 
 The CI check is named **`test`** (the job name in `.github/workflows/ci.yml`).
 
+This endpoint requires a complete body, and `restrictions` must be either an
+object or literal JSON `null`. `gh`'s `-F` cannot express `null`: an empty value
+becomes the empty string, which the API rejects with
+
+```
+No subschema in "anyOf" matched.
+For 'allOf/0', "" is not an object.
+For 'anyOf/1', "" is not a null.
+```
+
+Write the body to a file and pass it with `--input`:
+
 ```bash
+cat > protection.json <<'JSON'
+{
+  "required_status_checks": { "strict": true, "contexts": ["test"] },
+  "enforce_admins": true,
+  "required_pull_request_reviews": {
+    "dismiss_stale_reviews": true,
+    "require_code_owner_reviews": false,
+    "required_approving_review_count": 0
+  },
+  "restrictions": null,
+  "required_linear_history": true,
+  "allow_force_pushes": false,
+  "allow_deletions": false,
+  "required_conversation_resolution": true
+}
+JSON
+
 gh api -X PUT repos/Bert-Oja/whatsapp-mcp/branches/main/protection \
-  -H "Accept: application/vnd.github+json" \
-  -F 'required_status_checks[strict]=true' \
-  -F 'required_status_checks[contexts][]=test' \
-  -F 'enforce_admins=true' \
-  -F 'required_pull_request_reviews[required_approving_review_count]=0' \
-  -F 'required_pull_request_reviews[dismiss_stale_reviews]=true' \
-  -F 'restrictions=' \
-  -F 'allow_force_pushes=false' \
-  -F 'allow_deletions=false' \
-  -F 'required_conversation_resolution=true'
+  --input protection.json
 ```
 
 Notes on the choices:
@@ -49,10 +69,15 @@ Notes on the choices:
 - `required_approving_review_count=0` permits self-merge on a solo repo while
   still requiring a PR, which is the only way to get squash-only + linear
   history. Raise it to 1 if anyone else ever contributes.
+- `required_linear_history=true` blocks pushing merge commits directly, so
+  history on `main` stays linear even outside the squash path.
 - `enforce_admins=true` means the rules apply to the owner too. Drop it only if
   you want an escape hatch.
-- Leaving `restrictions` empty keeps pushes open to collaborators; the PR
-  requirement is what actually gates `main`.
+- `restrictions: null` keeps pushes open to collaborators; the PR requirement is
+  what actually gates `main`.
+
+Only `-F` fields can be combined on the command line; `restrictions` cannot, so
+use `--input` for the whole body rather than mixing the two.
 
 ## 3. Verify
 
