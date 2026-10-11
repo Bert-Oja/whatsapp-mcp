@@ -1,3 +1,15 @@
 *.db
 claude_desktop_config.json
 whatsapp.log
+
+# Local Go build output (see dev.sh; the host has no Go toolchain)
+.build/
+
+# local debugging scratch
+dbcheck/
+
+# Python bytecode. The Python server is gone, but removing its directory also
+# removed the .gitignore that covered __pycache__, and stale .pyc files left in
+# the working tree were picked up by `git add -A`.
+*.pyc
+__pycache__/
